@@ -14,14 +14,16 @@ async fn main(_spawner: Spawner) {
 
     info!("setting up serial port");
 
-    // let mut uart = uart::Uart::new_with_rtscts_blocking(p.UART0, p.PIN_0, p.PIN_1, p.PIN_3, p.PIN_2, config);
-    let mut uart = uart::Uart::new_blocking(p.UART0, p.PIN_0, p.PIN_1, config);
-    info!("initial serial write");
+    // also works, requires 4 wires
+    let mut uart = uart::Uart::new_with_rtscts_blocking(p.UART0, p.PIN_0, p.PIN_1, p.PIN_3, p.PIN_2, config);
+    // works:
+    // let mut uart = uart::Uart::new_blocking(p.UART0, p.PIN_0, p.PIN_1, config);
+    info!("initial serial write with RTS");
     uart.blocking_write("Hello World!\r\n".as_bytes()).unwrap();
 
     info!("entering loop");
     loop {
-        uart.blocking_write("hello there!\r\n".as_bytes()).unwrap();
+        uart.blocking_write("hello there 2!\r\n".as_bytes()).unwrap();
         cortex_m::asm::delay(1_000_000);
     }
 }
