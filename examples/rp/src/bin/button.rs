@@ -10,7 +10,7 @@ use {defmt_rtt as _, panic_probe as _};
 async fn main(_spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
     let button = Input::new(p.PIN_28, Pull::Up);
-    let mut led = Output::new(p.PIN_25, Level::Low);
+    let mut led = Output::new(p.PIN_15, Level::Low);
 
     loop {
         if button.is_high() {
