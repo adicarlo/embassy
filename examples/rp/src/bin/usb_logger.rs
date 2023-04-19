@@ -16,15 +16,20 @@ async fn logger_task(driver: Driver<'static, USB>) {
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
+    log::info!("firing up ...");
     let p = embassy_rp::init(Default::default());
     let irq = interrupt::take!(USBCTRL_IRQ);
     let driver = Driver::new(p.USB, irq);
     spawner.spawn(logger_task(driver)).unwrap();
 
+    log::info!("entering loop ...");
+
+    // FIXME: i can read data off this at 9600 8n1 but its very flakey, why?
+
     let mut counter = 0;
     loop {
         counter += 1;
-        log::info!("Tick {}", counter);
+        log::info!("Tick {}\n", counter);
         Timer::after(Duration::from_secs(1)).await;
     }
 }
