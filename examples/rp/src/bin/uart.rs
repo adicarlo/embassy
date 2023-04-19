@@ -14,6 +14,8 @@ async fn main(_spawner: Spawner) {
 
     info!("setting up serial port");
 
+    // to see serial, run, for example:
+    //   screen /dev/ttyUSB0 115200
     // also works, requires 4 wires
     let mut uart = uart::Uart::new_with_rtscts_blocking(p.UART0, p.PIN_0, p.PIN_1, p.PIN_3, p.PIN_2, config);
     // works:
