@@ -1,12 +1,15 @@
 use core::marker::PhantomData;
 
-use embassy_hal_common::into_ref;
-use stm32_metapac::rcc::vals::{Mcopre, Mcosel};
+use embassy_hal_internal::into_ref;
+use stm32_metapac::rcc::regs::Cfgr;
+use stm32_metapac::rcc::vals::{Lsedrv, Mcopre, Mcosel};
 
+pub use super::bus::{AHBPrescaler, APBPrescaler};
 use crate::gpio::sealed::AFType;
 use crate::gpio::Speed;
 use crate::pac::rcc::vals::{Hpre, Msirange, Pllsrc, Ppre, Sw};
-use crate::pac::{FLASH, RCC};
+use crate::pac::{FLASH, PWR, RCC};
+use crate::rcc::bd::{BackupDomain, RtcClockSource};
 use crate::rcc::{set_freqs, Clocks};
 use crate::time::Hertz;
 use crate::{peripherals, Peripheral};
@@ -75,30 +78,6 @@ pub enum PLLDiv {
     Div2,
     Div3,
     Div4,
-}
-
-/// AHB prescaler
-#[derive(Clone, Copy, PartialEq)]
-pub enum AHBPrescaler {
-    NotDivided,
-    Div2,
-    Div4,
-    Div8,
-    Div16,
-    Div64,
-    Div128,
-    Div256,
-    Div512,
-}
-
-/// APB prescaler
-#[derive(Clone, Copy)]
-pub enum APBPrescaler {
-    NotDivided,
-    Div2,
-    Div4,
-    Div8,
-    Div16,
 }
 
 /// PLL clock input source
@@ -208,34 +187,6 @@ impl From<PLLSource> for Pllsrc {
     }
 }
 
-impl From<APBPrescaler> for Ppre {
-    fn from(val: APBPrescaler) -> Ppre {
-        match val {
-            APBPrescaler::NotDivided => Ppre::DIV1,
-            APBPrescaler::Div2 => Ppre::DIV2,
-            APBPrescaler::Div4 => Ppre::DIV4,
-            APBPrescaler::Div8 => Ppre::DIV8,
-            APBPrescaler::Div16 => Ppre::DIV16,
-        }
-    }
-}
-
-impl From<AHBPrescaler> for Hpre {
-    fn from(val: AHBPrescaler) -> Hpre {
-        match val {
-            AHBPrescaler::NotDivided => Hpre::DIV1,
-            AHBPrescaler::Div2 => Hpre::DIV2,
-            AHBPrescaler::Div4 => Hpre::DIV4,
-            AHBPrescaler::Div8 => Hpre::DIV8,
-            AHBPrescaler::Div16 => Hpre::DIV16,
-            AHBPrescaler::Div64 => Hpre::DIV64,
-            AHBPrescaler::Div128 => Hpre::DIV128,
-            AHBPrescaler::Div256 => Hpre::DIV256,
-            AHBPrescaler::Div512 => Hpre::DIV512,
-        }
-    }
-}
-
 impl From<MSIRange> for Msirange {
     fn from(val: MSIRange) -> Msirange {
         match val {
@@ -289,6 +240,7 @@ pub struct Config {
     )>,
     #[cfg(not(any(stm32l471, stm32l475, stm32l476, stm32l486)))]
     pub hsi48: bool,
+    pub rtc_mux: RtcClockSource,
 }
 
 impl Default for Config {
@@ -302,6 +254,7 @@ impl Default for Config {
             pllsai1: None,
             #[cfg(not(any(stm32l471, stm32l475, stm32l476, stm32l486)))]
             hsi48: false,
+            rtc_mux: RtcClockSource::LSI,
         }
     }
 }
@@ -432,15 +385,74 @@ impl<'d, T: McoInstance> Mco<'d, T> {
 }
 
 pub(crate) unsafe fn init(config: Config) {
+    // Switch to MSI to prevent problems with PLL configuration.
+    if !RCC.cr().read().msion() {
+        // Turn on MSI and configure it to 4MHz.
+        RCC.cr().modify(|w| {
+            w.set_msirgsel(true); // MSI Range is provided by MSIRANGE[3:0].
+            w.set_msirange(MSIRange::default().into());
+            w.set_msipllen(false);
+            w.set_msion(true)
+        });
+
+        // Wait until MSI is running
+        while !RCC.cr().read().msirdy() {}
+    }
+    if RCC.cfgr().read().sws() != Sw::MSI {
+        // Set MSI as a clock source, reset prescalers.
+        RCC.cfgr().write_value(Cfgr::default());
+        // Wait for clock switch status bits to change.
+        while RCC.cfgr().read().sws() != Sw::MSI {}
+    }
+
+    RCC.apb1enr1().modify(|w| w.set_pwren(true));
+
+    match config.rtc_mux {
+        RtcClockSource::LSE => {
+            // 1. Unlock the backup domain
+            PWR.cr1().modify(|w| w.set_dbp(true));
+
+            // 2. Setup the LSE
+            RCC.bdcr().modify(|w| {
+                // Enable LSE
+                w.set_lseon(true);
+                // Max drive strength
+                // TODO: should probably be settable
+                w.set_lsedrv(Lsedrv::HIGH);
+            });
+
+            // Wait until LSE is running
+            while !RCC.bdcr().read().lserdy() {}
+
+            BackupDomain::set_rtc_clock_source(RtcClockSource::LSE);
+        }
+        RtcClockSource::LSI => {
+            // Turn on the internal 32 kHz LSI oscillator
+            RCC.csr().modify(|w| w.set_lsion(true));
+
+            // Wait until LSI is running
+            while !RCC.csr().read().lsirdy() {}
+
+            BackupDomain::set_rtc_clock_source(RtcClockSource::LSI);
+        }
+        _ => unreachable!(),
+    }
+
     let (sys_clk, sw) = match config.mux {
         ClockSrc::MSI(range) => {
             // Enable MSI
             RCC.cr().write(|w| {
                 let bits: Msirange = range.into();
                 w.set_msirange(bits);
-                w.set_msipllen(false);
                 w.set_msirgsel(true);
                 w.set_msion(true);
+
+                if let RtcClockSource::LSE = config.rtc_mux {
+                    // If LSE is enabled, enable calibration of MSI
+                    w.set_msipllen(true);
+                } else {
+                    w.set_msipllen(false);
+                }
             });
             while !RCC.cr().read().msirdy() {}
 
@@ -596,7 +608,7 @@ pub(crate) unsafe fn init(config: Config) {
         AHBPrescaler::NotDivided => sys_clk,
         pre => {
             let pre: Hpre = pre.into();
-            let pre = 1 << (pre.0 as u32 - 7);
+            let pre = 1 << (pre.to_bits() as u32 - 7);
             sys_clk / pre
         }
     };
@@ -605,7 +617,7 @@ pub(crate) unsafe fn init(config: Config) {
         APBPrescaler::NotDivided => (ahb_freq, ahb_freq),
         pre => {
             let pre: Ppre = pre.into();
-            let pre: u8 = 1 << (pre.0 - 3);
+            let pre: u8 = 1 << (pre.to_bits() - 3);
             let freq = ahb_freq / pre as u32;
             (freq, freq * 2)
         }
@@ -615,11 +627,13 @@ pub(crate) unsafe fn init(config: Config) {
         APBPrescaler::NotDivided => (ahb_freq, ahb_freq),
         pre => {
             let pre: Ppre = pre.into();
-            let pre: u8 = 1 << (pre.0 - 3);
+            let pre: u8 = 1 << (pre.to_bits() - 3);
             let freq = ahb_freq / pre as u32;
             (freq, freq * 2)
         }
     };
+
+    RCC.apb1enr1().modify(|w| w.set_pwren(true));
 
     set_freqs(Clocks {
         sys: Hertz(sys_clk),

@@ -36,7 +36,7 @@
 //! ```
 //! use embassy_time::driver::{Driver, AlarmHandle};
 //!
-//! struct MyDriver{}; // not public!
+//! struct MyDriver{} // not public!
 //! embassy_time::time_driver_impl!(static DRIVER: MyDriver = MyDriver{});
 //!
 //! impl Driver for MyDriver {
@@ -49,7 +49,7 @@
 //!     fn set_alarm_callback(&self, alarm: AlarmHandle, callback: fn(*mut ()), ctx: *mut ()) {
 //!         todo!()
 //!     }
-//!     fn set_alarm(&self, alarm: AlarmHandle, timestamp: u64) {
+//!     fn set_alarm(&self, alarm: AlarmHandle, timestamp: u64) -> bool {
 //!         todo!()
 //!     }
 //! }

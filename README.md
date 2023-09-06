@@ -33,9 +33,10 @@ The <a href="https://docs.embassy.dev/embassy-net/">embassy-net</a> network stac
 
 - **Bluetooth** - 
 The <a href="https://github.com/embassy-rs/nrf-softdevice">nrf-softdevice</a> crate provides Bluetooth Low Energy 4.x and 5.x support for nRF52 microcontrollers.
+The <a href="https://github.com/embassy-rs/embassy/tree/main/embassy-stm32-wpan">embassy-stm32-wpan</a> crate provides Bluetooth Low Energy 5.x support for stm32wb microcontrollers.
 
 - **LoRa** - 
-<a href="https://docs.embassy.dev/embassy-lora/">embassy-lora</a> supports LoRa networking on STM32WL wireless microcontrollers and Semtech SX126x and SX127x transceivers.
+<a href="https://docs.embassy.dev/embassy-lora/">embassy-lora</a> supports LoRa networking.
 
 - **USB** - 
 <a href="https://docs.embassy.dev/embassy-usb/">embassy-usb</a> implements a device-side USB stack. Implementations for common classes such as USB serial (CDC ACM) and USB HID are available, and a rich builder API allows building your own.
@@ -99,17 +100,10 @@ Examples are found in the `examples/` folder seperated by the chip manufacturer 
 
 ### Running examples
 
-- Setup git submodules (needed for STM32 examples)
+- Install `probe-rs`.
 
 ```bash
-git submodule init
-git submodule update
-```
-
-- Install `probe-run` with defmt support.
-
-```bash
-cargo install probe-run
+cargo install probe-rs --features cli
 ```
 
 - Change directory to the sample's base directory. For example:
@@ -118,13 +112,21 @@ cargo install probe-run
 cd examples/nrf52840
 ```
 
+- Ensure `Cargo.toml` sets the right feature for the name of the chip you are programming.
+  If this name is incorrect, the example may fail to run or immediately crash
+  after being programmed.
+
+- Ensure `.cargo/config.toml` contains the name of the chip you are programming.
+
 - Run the example
 
 For example:
 
 ```bash
-cargo run --bin blinky
+cargo run --release --bin blinky
 ```
+
+For more help getting started, see [Getting Started][1] and [Running the Examples][2].
 
 ## Developing Embassy with Rust Analyzer based editors
 
@@ -158,3 +160,5 @@ This work is licensed under either of
 
 at your option.
 
+[1]: https://github.com/embassy-rs/embassy/wiki/Getting-Started
+[2]: https://github.com/embassy-rs/embassy/wiki/Running-the-Examples

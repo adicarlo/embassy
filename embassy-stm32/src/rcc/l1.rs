@@ -1,3 +1,4 @@
+pub use super::bus::{AHBPrescaler, APBPrescaler};
 use crate::pac::rcc::vals::{Hpre, Msirange, Plldiv, Pllmul, Pllsrc, Ppre, Sw};
 use crate::pac::{FLASH, RCC};
 use crate::rcc::{set_freqs, Clocks};
@@ -68,30 +69,6 @@ pub enum PLLMul {
     Mul48,
 }
 
-/// AHB prescaler
-#[derive(Clone, Copy, PartialEq)]
-pub enum AHBPrescaler {
-    NotDivided,
-    Div2,
-    Div4,
-    Div8,
-    Div16,
-    Div64,
-    Div128,
-    Div256,
-    Div512,
-}
-
-/// APB prescaler
-#[derive(Clone, Copy)]
-pub enum APBPrescaler {
-    NotDivided,
-    Div2,
-    Div4,
-    Div8,
-    Div16,
-}
-
 /// PLL clock input source
 #[derive(Clone, Copy)]
 pub enum PLLSource {
@@ -130,34 +107,6 @@ impl From<PLLSource> for Pllsrc {
         match val {
             PLLSource::HSI => Pllsrc::HSI,
             PLLSource::HSE(_) => Pllsrc::HSE,
-        }
-    }
-}
-
-impl From<APBPrescaler> for Ppre {
-    fn from(val: APBPrescaler) -> Ppre {
-        match val {
-            APBPrescaler::NotDivided => Ppre::DIV1,
-            APBPrescaler::Div2 => Ppre::DIV2,
-            APBPrescaler::Div4 => Ppre::DIV4,
-            APBPrescaler::Div8 => Ppre::DIV8,
-            APBPrescaler::Div16 => Ppre::DIV16,
-        }
-    }
-}
-
-impl From<AHBPrescaler> for Hpre {
-    fn from(val: AHBPrescaler) -> Hpre {
-        match val {
-            AHBPrescaler::NotDivided => Hpre::DIV1,
-            AHBPrescaler::Div2 => Hpre::DIV2,
-            AHBPrescaler::Div4 => Hpre::DIV4,
-            AHBPrescaler::Div8 => Hpre::DIV8,
-            AHBPrescaler::Div16 => Hpre::DIV16,
-            AHBPrescaler::Div64 => Hpre::DIV64,
-            AHBPrescaler::Div128 => Hpre::DIV128,
-            AHBPrescaler::Div256 => Hpre::DIV256,
-            AHBPrescaler::Div512 => Hpre::DIV512,
         }
     }
 }
@@ -294,7 +243,7 @@ pub(crate) unsafe fn init(config: Config) {
         AHBPrescaler::NotDivided => sys_clk,
         pre => {
             let pre: Hpre = pre.into();
-            let pre = 1 << (pre.0 as u32 - 7);
+            let pre = 1 << (pre.to_bits() as u32 - 7);
             sys_clk / pre
         }
     };
@@ -303,7 +252,7 @@ pub(crate) unsafe fn init(config: Config) {
         APBPrescaler::NotDivided => (ahb_freq, ahb_freq),
         pre => {
             let pre: Ppre = pre.into();
-            let pre: u8 = 1 << (pre.0 - 3);
+            let pre: u8 = 1 << (pre.to_bits() - 3);
             let freq = ahb_freq / pre as u32;
             (freq, freq * 2)
         }
@@ -313,7 +262,7 @@ pub(crate) unsafe fn init(config: Config) {
         APBPrescaler::NotDivided => (ahb_freq, ahb_freq),
         pre => {
             let pre: Ppre = pre.into();
-            let pre: u8 = 1 << (pre.0 - 3);
+            let pre: u8 = 1 << (pre.to_bits() - 3);
             let freq = ahb_freq / pre as u32;
             (freq, freq * 2)
         }

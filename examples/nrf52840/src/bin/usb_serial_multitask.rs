@@ -12,22 +12,13 @@ use embassy_nrf::{bind_interrupts, pac, peripherals, usb};
 use embassy_usb::class::cdc_acm::{CdcAcmClass, State};
 use embassy_usb::driver::EndpointError;
 use embassy_usb::{Builder, Config, UsbDevice};
-use static_cell::StaticCell;
+use static_cell::make_static;
 use {defmt_rtt as _, panic_probe as _};
 
 bind_interrupts!(struct Irqs {
     USBD => usb::InterruptHandler<peripherals::USBD>;
     POWER_CLOCK => usb::vbus_detect::InterruptHandler;
 });
-
-macro_rules! singleton {
-    ($val:expr) => {{
-        type T = impl Sized;
-        static STATIC_CELL: StaticCell<T> = StaticCell::new();
-        let (x,) = STATIC_CELL.init(($val,));
-        x
-    }};
-}
 
 type MyDriver = Driver<'static, peripherals::USBD, HardwareVbusDetect>;
 
@@ -66,24 +57,24 @@ async fn main(spawner: Spawner) {
     config.max_power = 100;
     config.max_packet_size_0 = 64;
 
-    // Required for windows compatiblity.
+    // Required for windows compatibility.
     // https://developer.nordicsemi.com/nRF_Connect_SDK/doc/1.9.1/kconfig/CONFIG_CDC_ACM_IAD.html#help
     config.device_class = 0xEF;
     config.device_sub_class = 0x02;
     config.device_protocol = 0x01;
     config.composite_with_iads = true;
 
-    let state = singleton!(State::new());
+    let state = make_static!(State::new());
 
     // Create embassy-usb DeviceBuilder using the driver and config.
     let mut builder = Builder::new(
         driver,
         config,
-        &mut singleton!([0; 256])[..],
-        &mut singleton!([0; 256])[..],
-        &mut singleton!([0; 256])[..],
-        &mut singleton!([0; 128])[..],
-        &mut singleton!([0; 128])[..],
+        &mut make_static!([0; 256])[..],
+        &mut make_static!([0; 256])[..],
+        &mut make_static!([0; 256])[..],
+        &mut make_static!([0; 128])[..],
+        &mut make_static!([0; 128])[..],
     );
 
     // Create classes on the builder.

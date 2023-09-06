@@ -3,9 +3,8 @@
 use core::future::poll_fn;
 use core::task::Poll;
 
-use embassy_cortex_m::interrupt::Interrupt;
-use embassy_hal_common::drop::OnDrop;
-use embassy_hal_common::{into_ref, PeripheralRef};
+use embassy_hal_internal::drop::OnDrop;
+use embassy_hal_internal::{into_ref, PeripheralRef};
 use embassy_sync::waitqueue::AtomicWaker;
 use fixed::types::I30F2;
 
@@ -18,7 +17,7 @@ pub struct InterruptHandler {
     _private: (),
 }
 
-impl interrupt::Handler<interrupt::TEMP> for InterruptHandler {
+impl interrupt::typelevel::Handler<interrupt::typelevel::TEMP> for InterruptHandler {
     unsafe fn on_interrupt() {
         let r = unsafe { &*pac::TEMP::PTR };
         r.intenclr.write(|w| w.datardy().clear());
@@ -37,13 +36,13 @@ impl<'d> Temp<'d> {
     /// Create a new temperature sensor driver.
     pub fn new(
         _peri: impl Peripheral<P = TEMP> + 'd,
-        _irq: impl interrupt::Binding<interrupt::TEMP, InterruptHandler> + 'd,
+        _irq: impl interrupt::typelevel::Binding<interrupt::typelevel::TEMP, InterruptHandler> + 'd,
     ) -> Self {
         into_ref!(_peri);
 
         // Enable interrupt that signals temperature values
-        unsafe { interrupt::TEMP::steal() }.unpend();
-        unsafe { interrupt::TEMP::steal() }.enable();
+        interrupt::TEMP.unpend();
+        unsafe { interrupt::TEMP.enable() };
 
         Self { _peri }
     }
@@ -56,8 +55,19 @@ impl<'d> Temp<'d> {
     /// # Example
     ///
     /// ```no_run
-    /// let mut t = Temp::new(p.TEMP, interrupt::take!(TEMP));
+    /// use embassy_nrf::{bind_interrupts, temp};
+    /// use embassy_nrf::temp::Temp;
+    /// use embassy_time::{Duration, Timer};
+    ///
+    /// bind_interrupts!(struct Irqs {
+    ///     TEMP => temp::InterruptHandler;
+    /// });
+    ///
+    /// # async {
+    /// # let p: embassy_nrf::Peripherals = todo!();
+    /// let mut t = Temp::new(p.TEMP, Irqs);
     /// let v: u16 = t.read().await.to_num::<u16>();
+    /// # };
     /// ```
     pub async fn read(&mut self) -> I30F2 {
         // In case the future is dropped, stop the task and reset events.

@@ -61,16 +61,17 @@ macro_rules! intrinsics_aliases {
 /// Like the compiler-builtins macro, it accepts a series of functions that
 /// looks like normal Rust code:
 ///
-///     intrinsics! {
-///         extern "C" fn foo(a: i32) -> u32 {
-///             // ...
-///         }
-///
-///         #[nonstandard_attribute]
-///         extern "C" fn bar(a: i32) -> u32 {
-///             // ...
-///         }
+/// ```rust,ignore
+/// intrinsics! {
+///     extern "C" fn foo(a: i32) -> u32 {
+///         // ...
 ///     }
+///     #[nonstandard_attribute]
+///     extern "C" fn bar(a: i32) -> u32 {
+///         // ...
+///     }
+/// }
+/// ```
 ///
 /// Each function can also be decorated with nonstandard attributes to control
 /// additional behaviour:
@@ -361,10 +362,11 @@ macro_rules! division_function {
         #[cfg(all(target_arch = "arm", feature = "intrinsics"))]
         core::arch::global_asm!(
             // Mangle the name slightly, since this is a global symbol.
-            concat!(".global _rphal_", stringify!($name)),
-            concat!(".type _rphal_", stringify!($name), ", %function"),
+            concat!(".section .text._erphal_", stringify!($name)),
+            concat!(".global _erphal_", stringify!($name)),
+            concat!(".type _erphal_", stringify!($name), ", %function"),
             ".align 2",
-            concat!("_rphal_", stringify!($name), ":"),
+            concat!("_erphal_", stringify!($name), ":"),
             $(
                 concat!(".global ", stringify!($intrinsic)),
                 concat!(".type ", stringify!($intrinsic), ", %function"),
@@ -379,10 +381,11 @@ macro_rules! division_function {
         #[cfg(all(target_arch = "arm", not(feature = "intrinsics")))]
         core::arch::global_asm!(
             // Mangle the name slightly, since this is a global symbol.
-            concat!(".global _rphal_", stringify!($name)),
-            concat!(".type _rphal_", stringify!($name), ", %function"),
+            concat!(".section .text._erphal_", stringify!($name)),
+            concat!(".global _erphal_", stringify!($name)),
+            concat!(".type _erphal_", stringify!($name), ", %function"),
             ".align 2",
-            concat!("_rphal_", stringify!($name), ":"),
+            concat!("_erphal_", stringify!($name), ":"),
 
             "hwdivider_head",
             $($begin),+ ,
@@ -392,7 +395,7 @@ macro_rules! division_function {
         #[cfg(target_arch = "arm")]
         extern "aapcs" {
             // Connect a local name to global symbol above through FFI.
-            #[link_name = concat!("_rphal_", stringify!($name)) ]
+            #[link_name = concat!("_erphal_", stringify!($name)) ]
             fn $name(n: $argty, d: $argty) -> u64;
         }
 

@@ -51,7 +51,7 @@ pub struct DateTime {
 impl From<chrono::NaiveDateTime> for DateTime {
     fn from(date_time: chrono::NaiveDateTime) -> Self {
         Self {
-            year: (date_time.year() - 1970) as u16,
+            year: date_time.year() as u16,
             month: date_time.month() as u8,
             day: date_time.day() as u8,
             day_of_week: date_time.weekday().into(),
@@ -65,14 +65,10 @@ impl From<chrono::NaiveDateTime> for DateTime {
 #[cfg(feature = "chrono")]
 impl From<DateTime> for chrono::NaiveDateTime {
     fn from(date_time: DateTime) -> Self {
-        NaiveDate::from_ymd_opt(
-            (date_time.year + 1970) as i32,
-            date_time.month as u32,
-            date_time.day as u32,
-        )
-        .unwrap()
-        .and_hms_opt(date_time.hour as u32, date_time.minute as u32, date_time.second as u32)
-        .unwrap()
+        NaiveDate::from_ymd_opt(date_time.year as i32, date_time.month as u32, date_time.day as u32)
+            .unwrap()
+            .and_hms_opt(date_time.hour as u32, date_time.minute as u32, date_time.second as u32)
+            .unwrap()
     }
 }
 
@@ -93,7 +89,7 @@ pub enum DayOfWeek {
 #[cfg(feature = "chrono")]
 impl From<chrono::Weekday> for DayOfWeek {
     fn from(weekday: Weekday) -> Self {
-        day_of_week_from_u8(weekday.number_from_monday() as u8).unwrap()
+        day_of_week_from_u8(weekday.num_days_from_monday() as u8).unwrap()
     }
 }
 
@@ -158,27 +154,27 @@ pub(super) fn write_date_time(rtc: &Rtc, t: DateTime) {
     let yr_offset = (yr - 1970_u16) as u8;
     let (yt, yu) = byte_to_bcd2(yr_offset);
 
-    unsafe {
-        rtc.tr().write(|w| {
-            w.set_ht(ht);
-            w.set_hu(hu);
-            w.set_mnt(mnt);
-            w.set_mnu(mnu);
-            w.set_st(st);
-            w.set_su(su);
-            w.set_pm(stm32_metapac::rtc::vals::Ampm::AM);
-        });
+    use crate::pac::rtc::vals::Ampm;
 
-        rtc.dr().write(|w| {
-            w.set_dt(dt);
-            w.set_du(du);
-            w.set_mt(mt > 0);
-            w.set_mu(mu);
-            w.set_yt(yt);
-            w.set_yu(yu);
-            w.set_wdu(day_of_week_to_u8(t.day_of_week));
-        });
-    }
+    rtc.tr().write(|w| {
+        w.set_ht(ht);
+        w.set_hu(hu);
+        w.set_mnt(mnt);
+        w.set_mnu(mnu);
+        w.set_st(st);
+        w.set_su(su);
+        w.set_pm(Ampm::AM);
+    });
+
+    rtc.dr().write(|w| {
+        w.set_dt(dt);
+        w.set_du(du);
+        w.set_mt(mt > 0);
+        w.set_mu(mu);
+        w.set_yt(yt);
+        w.set_yu(yu);
+        w.set_wdu(day_of_week_to_u8(t.day_of_week));
+    });
 }
 
 pub(super) fn datetime(

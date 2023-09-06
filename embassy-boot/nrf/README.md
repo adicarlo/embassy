@@ -6,14 +6,14 @@ An adaptation of `embassy-boot` for nRF.
 
 ## Features
 
-* Load applications with our without the softdevice.
+* Load applications with or without the softdevice.
 * Configure bootloader partitions based on linker script.
 * Using watchdog timer to detect application failure.
 
 
 ## Minimum supported Rust version (MSRV)
 
-`embassy-boot-nrf` requires Rust nightly to compile as it relies on async traits for interacting with the flash peripherals.
+`embassy-boot-nrf` is guaranteed to compile on the latest stable Rust version at the time of release. It might compile with older versions but that may change in any new patch release.
 
 ## License
 

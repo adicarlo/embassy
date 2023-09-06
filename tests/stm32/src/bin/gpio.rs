@@ -1,13 +1,13 @@
 #![no_std]
 #![no_main]
 #![feature(type_alias_impl_trait)]
+#[path = "../common.rs"]
+mod common;
 
-#[path = "../example_common.rs"]
-mod example_common;
+use common::*;
 use defmt::assert;
 use embassy_executor::Spawner;
 use embassy_stm32::gpio::{Flex, Input, Level, Output, OutputOpenDrain, Pull, Speed};
-use example_common::*;
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
@@ -40,14 +40,46 @@ async fn main(_spawner: Spawner) {
         let b = Input::new(&mut b, Pull::None);
 
         {
-            let _a = Output::new(&mut a, Level::Low, Speed::Low);
+            let a = Output::new(&mut a, Level::Low, Speed::Low);
             delay();
             assert!(b.is_low());
+            assert!(!b.is_high());
+            assert!(a.is_set_low());
+            assert!(!a.is_set_high());
         }
         {
-            let _a = Output::new(&mut a, Level::High, Speed::Low);
+            let mut a = Output::new(&mut a, Level::High, Speed::Low);
+            delay();
+            assert!(!b.is_low());
+            assert!(b.is_high());
+            assert!(!a.is_set_low());
+            assert!(a.is_set_high());
+
+            // Test is_set_low / is_set_high
+            a.set_low();
+            delay();
+            assert!(b.is_low());
+            assert!(a.is_set_low());
+            assert!(!a.is_set_high());
+
+            a.set_high();
             delay();
             assert!(b.is_high());
+            assert!(!a.is_set_low());
+            assert!(a.is_set_high());
+
+            // Test toggle
+            a.toggle();
+            delay();
+            assert!(b.is_low());
+            assert!(a.is_set_low());
+            assert!(!a.is_set_high());
+
+            a.toggle();
+            delay();
+            assert!(b.is_high());
+            assert!(!a.is_set_low());
+            assert!(a.is_set_high());
         }
     }
 

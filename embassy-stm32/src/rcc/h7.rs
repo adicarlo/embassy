@@ -1,6 +1,6 @@
 use core::marker::PhantomData;
 
-use embassy_hal_common::into_ref;
+use embassy_hal_internal::into_ref;
 pub use pll::PllConfig;
 use stm32_metapac::rcc::vals::{Mco1, Mco2};
 
@@ -24,21 +24,7 @@ pub const HSI48_FREQ: Hertz = Hertz(48_000_000);
 /// LSI speed
 pub const LSI_FREQ: Hertz = Hertz(32_000);
 
-/// Voltage Scale
-///
-/// Represents the voltage range feeding the CPU core. The maximum core
-/// clock frequency depends on this value.
-#[derive(Copy, Clone, PartialEq)]
-pub enum VoltageScale {
-    /// VOS 0 range VCORE 1.26V - 1.40V
-    Scale0,
-    /// VOS 1 range VCORE 1.15V - 1.26V
-    Scale1,
-    /// VOS 2 range VCORE 1.05V - 1.15V
-    Scale2,
-    /// VOS 3 range VCORE 0.95V - 1.05V
-    Scale3,
-}
+pub use super::bus::VoltageScale;
 
 #[derive(Clone, Copy)]
 pub enum AdcClockSource {
@@ -214,6 +200,7 @@ fn flash_setup(rcc_aclk: u32, vos: VoltageScale) {
 
     // See RM0433 Rev 7 Table 17. FLASH recommended number of wait
     // states and programming delay
+    #[cfg(flash_h7)]
     let (wait_states, progr_delay) = match vos {
         // VOS 0 range VCORE 1.26V - 1.40V
         VoltageScale::Scale0 => match rcc_aclk_mhz {
@@ -253,14 +240,55 @@ fn flash_setup(rcc_aclk: u32, vos: VoltageScale) {
         },
     };
 
-    // NOTE(unsafe) Atomic write
-    unsafe {
-        FLASH.acr().write(|w| {
-            w.set_wrhighfreq(progr_delay);
-            w.set_latency(wait_states)
-        });
-        while FLASH.acr().read().latency() != wait_states {}
-    }
+    // See RM0455 Rev 10 Table 16. FLASH recommended number of wait
+    // states and programming delay
+    #[cfg(flash_h7ab)]
+    let (wait_states, progr_delay) = match vos {
+        // VOS 0 range VCORE 1.25V - 1.35V
+        VoltageScale::Scale0 => match rcc_aclk_mhz {
+            0..=42 => (0, 0),
+            43..=84 => (1, 0),
+            85..=126 => (2, 1),
+            127..=168 => (3, 1),
+            169..=210 => (4, 2),
+            211..=252 => (5, 2),
+            253..=280 => (6, 3),
+            _ => (7, 3),
+        },
+        // VOS 1 range VCORE 1.15V - 1.25V
+        VoltageScale::Scale1 => match rcc_aclk_mhz {
+            0..=38 => (0, 0),
+            39..=76 => (1, 0),
+            77..=114 => (2, 1),
+            115..=152 => (3, 1),
+            153..=190 => (4, 2),
+            191..=225 => (5, 2),
+            _ => (7, 3),
+        },
+        // VOS 2 range VCORE 1.05V - 1.15V
+        VoltageScale::Scale2 => match rcc_aclk_mhz {
+            0..=34 => (0, 0),
+            35..=68 => (1, 0),
+            69..=102 => (2, 1),
+            103..=136 => (3, 1),
+            137..=160 => (4, 2),
+            _ => (7, 3),
+        },
+        // VOS 3 range VCORE 0.95V - 1.05V
+        VoltageScale::Scale3 => match rcc_aclk_mhz {
+            0..=22 => (0, 0),
+            23..=44 => (1, 0),
+            45..=66 => (2, 1),
+            67..=88 => (3, 1),
+            _ => (7, 3),
+        },
+    };
+
+    FLASH.acr().write(|w| {
+        w.set_wrhighfreq(progr_delay);
+        w.set_latency(wait_states)
+    });
+    while FLASH.acr().read().latency() != wait_states {}
 }
 
 pub enum McoClock {
@@ -474,7 +502,6 @@ pub(crate) unsafe fn init(mut config: Config) {
     // Configure traceclk from PLL if needed
     traceclk_setup(&mut config, sys_use_pll1_p);
 
-    // NOTE(unsafe) We have exclusive access to the RCC
     let (pll1_p_ck, pll1_q_ck, pll1_r_ck) = pll::pll_setup(srcclk.0, &config.pll1, 0);
     let (pll2_p_ck, pll2_q_ck, pll2_r_ck) = pll::pll_setup(srcclk.0, &config.pll2, 1);
     let (pll3_p_ck, pll3_q_ck, pll3_r_ck) = pll::pll_setup(srcclk.0, &config.pll3, 2);
@@ -556,8 +583,6 @@ pub(crate) unsafe fn init(mut config: Config) {
     let requested_pclk4 = config.pclk4.map(|v| v.0).unwrap_or_else(|| pclk_max.min(rcc_hclk / 2));
     let (rcc_pclk4, ppre4_bits, ppre4, _) = ppre_calculate(requested_pclk4, rcc_hclk, pclk_max, None);
 
-    flash_setup(rcc_aclk, pwr_vos);
-
     // Start switching clocks -------------------
 
     // Ensure CSI is on and stable
@@ -605,22 +630,24 @@ pub(crate) unsafe fn init(mut config: Config) {
 
     // Core Prescaler / AHB Prescaler / APB3 Prescaler
     RCC.d1cfgr().modify(|w| {
-        w.set_d1cpre(Hpre(d1cpre_bits));
-        w.set_d1ppre(Dppre(ppre3_bits));
+        w.set_d1cpre(Hpre::from_bits(d1cpre_bits));
+        w.set_d1ppre(Dppre::from_bits(ppre3_bits));
         w.set_hpre(hpre_bits)
     });
     // Ensure core prescaler value is valid before future lower
     // core voltage
-    while RCC.d1cfgr().read().d1cpre().0 != d1cpre_bits {}
+    while RCC.d1cfgr().read().d1cpre().to_bits() != d1cpre_bits {}
+
+    flash_setup(rcc_aclk, pwr_vos);
 
     // APB1 / APB2 Prescaler
     RCC.d2cfgr().modify(|w| {
-        w.set_d2ppre1(Dppre(ppre1_bits));
-        w.set_d2ppre2(Dppre(ppre2_bits));
+        w.set_d2ppre1(Dppre::from_bits(ppre1_bits));
+        w.set_d2ppre2(Dppre::from_bits(ppre2_bits));
     });
 
     // APB4 Prescaler
-    RCC.d3cfgr().modify(|w| w.set_d3ppre(Dppre(ppre4_bits)));
+    RCC.d3cfgr().modify(|w| w.set_d3ppre(Dppre::from_bits(ppre4_bits)));
 
     // Peripheral Clock (per_ck)
     RCC.d1ccipr().modify(|w| w.set_ckpersel(ckpersel));
@@ -644,7 +671,7 @@ pub(crate) unsafe fn init(mut config: Config) {
         _ => Sw::HSI,
     };
     RCC.cfgr().modify(|w| w.set_sw(sw));
-    while RCC.cfgr().read().sws() != sw.0 {}
+    while RCC.cfgr().read().sws().to_bits() != sw.to_bits() {}
 
     // IO compensation cell - Requires CSI clock and SYSCFG
     assert!(RCC.cr().read().csirdy());
@@ -744,7 +771,7 @@ mod pll {
             }
         };
 
-        let vco_ck = output + pll_x_p;
+        let vco_ck = output * pll_x_p;
 
         assert!(pll_x_p < 128);
         assert!(vco_ck >= VCO_MIN);
@@ -756,7 +783,7 @@ mod pll {
     /// # Safety
     ///
     /// Must have exclusive access to the RCC register block
-    unsafe fn vco_setup(pll_src: u32, requested_output: u32, plln: usize) -> PllConfigResults {
+    fn vco_setup(pll_src: u32, requested_output: u32, plln: usize) -> PllConfigResults {
         use crate::pac::rcc::vals::{Pllrge, Pllvcosel};
 
         let (vco_ck_target, pll_x_p) = vco_output_divider_setup(requested_output, plln);
@@ -785,11 +812,7 @@ mod pll {
     /// # Safety
     ///
     /// Must have exclusive access to the RCC register block
-    pub(super) unsafe fn pll_setup(
-        pll_src: u32,
-        config: &PllConfig,
-        plln: usize,
-    ) -> (Option<u32>, Option<u32>, Option<u32>) {
+    pub(super) fn pll_setup(pll_src: u32, config: &PllConfig, plln: usize) -> (Option<u32>, Option<u32>, Option<u32>) {
         use crate::pac::rcc::vals::Divp;
 
         match config.p_ck {
@@ -814,7 +837,8 @@ mod pll {
                 RCC.pllcfgr().modify(|w| w.set_pllfracen(plln, false));
                 let vco_ck = ref_x_ck * pll_x_n;
 
-                RCC.plldivr(plln).modify(|w| w.set_divp1(Divp((pll_x_p - 1) as u8)));
+                RCC.plldivr(plln)
+                    .modify(|w| w.set_divp1(Divp::from_bits((pll_x_p - 1) as u8)));
                 RCC.pllcfgr().modify(|w| w.set_divpen(plln, true));
 
                 // Calulate additional output dividers

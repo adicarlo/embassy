@@ -6,9 +6,8 @@ use core::future::poll_fn;
 use core::sync::atomic::{compiler_fence, Ordering};
 use core::task::Poll;
 
-use embassy_cortex_m::interrupt::{Interrupt, InterruptExt};
-use embassy_hal_common::drop::OnDrop;
-use embassy_hal_common::{impl_peripheral, into_ref, PeripheralRef};
+use embassy_hal_internal::drop::OnDrop;
+use embassy_hal_internal::{impl_peripheral, into_ref, PeripheralRef};
 use embassy_sync::waitqueue::AtomicWaker;
 use pac::{saadc, SAADC};
 use saadc::ch::config::{GAIN_A, REFSEL_A, RESP_A, TACQ_A};
@@ -18,6 +17,7 @@ use saadc::oversample::OVERSAMPLE_A;
 use saadc::resolution::VAL_A;
 
 use self::sealed::Input as _;
+use crate::interrupt::InterruptExt;
 use crate::ppi::{ConfigurableChannel, Event, Ppi, Task};
 use crate::timer::{Frequency, Instance as TimerInstance, Timer};
 use crate::{interrupt, pac, peripherals, Peripheral};
@@ -33,7 +33,7 @@ pub struct InterruptHandler {
     _private: (),
 }
 
-impl interrupt::Handler<interrupt::SAADC> for InterruptHandler {
+impl interrupt::typelevel::Handler<interrupt::typelevel::SAADC> for InterruptHandler {
     unsafe fn on_interrupt() {
         let r = unsafe { &*SAADC::ptr() };
 
@@ -144,7 +144,7 @@ impl<'d, const N: usize> Saadc<'d, N> {
     /// Create a new SAADC driver.
     pub fn new(
         saadc: impl Peripheral<P = peripherals::SAADC> + 'd,
-        _irq: impl interrupt::Binding<interrupt::SAADC, InterruptHandler> + 'd,
+        _irq: impl interrupt::typelevel::Binding<interrupt::typelevel::SAADC, InterruptHandler> + 'd,
         config: Config,
         channel_configs: [ChannelConfig; N],
     ) -> Self {
@@ -189,8 +189,8 @@ impl<'d, const N: usize> Saadc<'d, N> {
         // Disable all events interrupts
         r.intenclr.write(|w| unsafe { w.bits(0x003F_FFFF) });
 
-        unsafe { interrupt::SAADC::steal() }.unpend();
-        unsafe { interrupt::SAADC::steal() }.enable();
+        interrupt::SAADC.unpend();
+        unsafe { interrupt::SAADC.enable() };
 
         Self { _p: saadc }
     }
@@ -320,7 +320,9 @@ impl<'d, const N: usize> Saadc<'d, N> {
         timer.cc(0).write(sample_counter);
         timer.cc(0).short_compare_clear();
 
-        let mut sample_ppi = Ppi::new_one_to_one(ppi_ch2, timer.cc(0).event_compare(), Task::from_reg(&r.tasks_sample));
+        let timer_cc = timer.cc(0);
+
+        let mut sample_ppi = Ppi::new_one_to_one(ppi_ch2, timer_cc.event_compare(), Task::from_reg(&r.tasks_sample));
 
         timer.start();
 

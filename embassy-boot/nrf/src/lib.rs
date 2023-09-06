@@ -1,76 +1,30 @@
 #![no_std]
-#![feature(type_alias_impl_trait)]
 #![warn(missing_docs)]
 #![doc = include_str!("../README.md")]
 mod fmt;
 
-pub use embassy_boot::{AlignedBuffer, BootFlash, FirmwareUpdater, FlashConfig, Partition, SingleFlashConfig};
-use embassy_nrf::nvmc::{Nvmc, PAGE_SIZE};
+pub use embassy_boot::{
+    AlignedBuffer, BlockingFirmwareState, BlockingFirmwareUpdater, BootLoaderConfig, FirmwareUpdaterConfig,
+};
+#[cfg(feature = "nightly")]
+pub use embassy_boot::{FirmwareState, FirmwareUpdater};
+use embassy_nrf::nvmc::PAGE_SIZE;
 use embassy_nrf::peripherals::WDT;
 use embassy_nrf::wdt;
 use embedded_storage::nor_flash::{ErrorType, NorFlash, ReadNorFlash};
 
 /// A bootloader for nRF devices.
-pub struct BootLoader<const BUFFER_SIZE: usize = PAGE_SIZE> {
-    boot: embassy_boot::BootLoader,
-    aligned_buf: AlignedBuffer<BUFFER_SIZE>,
-}
-
-impl Default for BootLoader<PAGE_SIZE> {
-    /// Create a new bootloader instance using parameters from linker script
-    fn default() -> Self {
-        extern "C" {
-            static __bootloader_state_start: u32;
-            static __bootloader_state_end: u32;
-            static __bootloader_active_start: u32;
-            static __bootloader_active_end: u32;
-            static __bootloader_dfu_start: u32;
-            static __bootloader_dfu_end: u32;
-        }
-
-        let active = unsafe {
-            Partition::new(
-                &__bootloader_active_start as *const u32 as u32,
-                &__bootloader_active_end as *const u32 as u32,
-            )
-        };
-        let dfu = unsafe {
-            Partition::new(
-                &__bootloader_dfu_start as *const u32 as u32,
-                &__bootloader_dfu_end as *const u32 as u32,
-            )
-        };
-        let state = unsafe {
-            Partition::new(
-                &__bootloader_state_start as *const u32 as u32,
-                &__bootloader_state_end as *const u32 as u32,
-            )
-        };
-
-        trace!("ACTIVE: 0x{:x} - 0x{:x}", active.from, active.to);
-        trace!("DFU: 0x{:x} - 0x{:x}", dfu.from, dfu.to);
-        trace!("STATE: 0x{:x} - 0x{:x}", state.from, state.to);
-
-        Self::new(active, dfu, state)
-    }
-}
+pub struct BootLoader<const BUFFER_SIZE: usize = PAGE_SIZE>;
 
 impl<const BUFFER_SIZE: usize> BootLoader<BUFFER_SIZE> {
-    /// Create a new bootloader instance using the supplied partitions for active, dfu and state.
-    pub fn new(active: Partition, dfu: Partition, state: Partition) -> Self {
-        Self {
-            boot: embassy_boot::BootLoader::new(active, dfu, state),
-            aligned_buf: AlignedBuffer([0; BUFFER_SIZE]),
-        }
-    }
-
-    /// Inspect the bootloader state and perform actions required before booting, such as swapping
-    /// firmware.
-    pub fn prepare<F: FlashConfig>(&mut self, flash: &mut F) -> usize {
-        match self.boot.prepare_boot(flash, &mut self.aligned_buf.0) {
-            Ok(_) => self.boot.boot_address(),
-            Err(_) => panic!("boot prepare error!"),
-        }
+    /// Inspect the bootloader state and perform actions required before booting, such as swapping firmware.
+    pub fn prepare<ACTIVE: NorFlash, DFU: NorFlash, STATE: NorFlash>(
+        config: BootLoaderConfig<ACTIVE, DFU, STATE>,
+    ) -> Self {
+        let mut aligned_buf = AlignedBuffer([0; BUFFER_SIZE]);
+        let mut boot = embassy_boot::BootLoader::new(config);
+        boot.prepare_boot(&mut aligned_buf.0).expect("Boot prepare error");
+        Self
     }
 
     /// Boots the application without softdevice mechanisms.
@@ -79,10 +33,10 @@ impl<const BUFFER_SIZE: usize> BootLoader<BUFFER_SIZE> {
     ///
     /// This modifies the stack pointer and reset vector and will run code placed in the active partition.
     #[cfg(not(feature = "softdevice"))]
-    pub unsafe fn load(&mut self, start: usize) -> ! {
+    pub unsafe fn load(self, start: u32) -> ! {
         let mut p = cortex_m::Peripherals::steal();
         p.SCB.invalidate_icache();
-        p.SCB.vtor.write(start as u32);
+        p.SCB.vtor.write(start);
         cortex_m::asm::bootload(start as *const u32)
     }
 
@@ -92,7 +46,7 @@ impl<const BUFFER_SIZE: usize> BootLoader<BUFFER_SIZE> {
     ///
     /// This modifies the stack pointer and reset vector and will run code placed in the active partition.
     #[cfg(feature = "softdevice")]
-    pub unsafe fn load(&mut self, _app: usize) -> ! {
+    pub unsafe fn load(self, _app: u32) -> ! {
         use nrf_softdevice_mbr as mbr;
         const NRF_SUCCESS: u32 = 0;
 
@@ -139,15 +93,15 @@ impl<const BUFFER_SIZE: usize> BootLoader<BUFFER_SIZE> {
     }
 }
 
-/// A flash implementation that wraps NVMC and will pet a watchdog when touching flash.
-pub struct WatchdogFlash<'d> {
-    flash: Nvmc<'d>,
+/// A flash implementation that wraps any flash and will pet a watchdog when touching flash.
+pub struct WatchdogFlash<FLASH> {
+    flash: FLASH,
     wdt: wdt::WatchdogHandle,
 }
 
-impl<'d> WatchdogFlash<'d> {
+impl<FLASH> WatchdogFlash<FLASH> {
     /// Start a new watchdog with a given flash and WDT peripheral and a timeout
-    pub fn start(flash: Nvmc<'d>, wdt: WDT, config: wdt::Config) -> Self {
+    pub fn start(flash: FLASH, wdt: WDT, config: wdt::Config) -> Self {
         let (_wdt, [wdt]) = match wdt::Watchdog::try_new(wdt, config) {
             Ok(x) => x,
             Err(_) => {
@@ -162,13 +116,13 @@ impl<'d> WatchdogFlash<'d> {
     }
 }
 
-impl<'d> ErrorType for WatchdogFlash<'d> {
-    type Error = <Nvmc<'d> as ErrorType>::Error;
+impl<FLASH: ErrorType> ErrorType for WatchdogFlash<FLASH> {
+    type Error = FLASH::Error;
 }
 
-impl<'d> NorFlash for WatchdogFlash<'d> {
-    const WRITE_SIZE: usize = <Nvmc<'d> as NorFlash>::WRITE_SIZE;
-    const ERASE_SIZE: usize = <Nvmc<'d> as NorFlash>::ERASE_SIZE;
+impl<FLASH: NorFlash> NorFlash for WatchdogFlash<FLASH> {
+    const WRITE_SIZE: usize = FLASH::WRITE_SIZE;
+    const ERASE_SIZE: usize = FLASH::ERASE_SIZE;
 
     fn erase(&mut self, from: u32, to: u32) -> Result<(), Self::Error> {
         self.wdt.pet();
@@ -180,8 +134,8 @@ impl<'d> NorFlash for WatchdogFlash<'d> {
     }
 }
 
-impl<'d> ReadNorFlash for WatchdogFlash<'d> {
-    const READ_SIZE: usize = <Nvmc<'d> as ReadNorFlash>::READ_SIZE;
+impl<FLASH: ReadNorFlash> ReadNorFlash for WatchdogFlash<FLASH> {
+    const READ_SIZE: usize = FLASH::READ_SIZE;
     fn read(&mut self, offset: u32, data: &mut [u8]) -> Result<(), Self::Error> {
         self.wdt.pet();
         self.flash.read(offset, data)

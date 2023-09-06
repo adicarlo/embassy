@@ -6,6 +6,10 @@ use super::{FlashRegion, FlashSector, FLASH_REGIONS, WRITE_SIZE};
 use crate::flash::Error;
 use crate::pac;
 
+pub const fn is_default_layout() -> bool {
+    true
+}
+
 pub const fn get_flash_regions() -> &'static [&'static FlashRegion] {
     &FLASH_REGIONS
 }
@@ -19,7 +23,7 @@ pub(crate) unsafe fn unlock() {
     pac::FLASH.keyr().write(|w| w.set_key(0xCDEF_89AB));
 }
 
-pub(crate) unsafe fn begin_write() {
+pub(crate) unsafe fn enable_blocking_write() {
     assert_eq!(0, WRITE_SIZE % 4);
 
     pac::FLASH.cr().write(|w| {
@@ -28,7 +32,7 @@ pub(crate) unsafe fn begin_write() {
     });
 }
 
-pub(crate) unsafe fn end_write() {
+pub(crate) unsafe fn disable_blocking_write() {
     pac::FLASH.cr().write(|w| w.set_pg(false));
 }
 
@@ -56,32 +60,15 @@ pub(crate) unsafe fn blocking_erase_sector(sector: &FlashSector) -> Result<(), E
     });
 
     let ret: Result<(), Error> = blocking_wait_ready();
-
     pac::FLASH.cr().modify(|w| w.set_ser(false));
-
     clear_all_err();
-
     ret
 }
 
 pub(crate) unsafe fn clear_all_err() {
-    pac::FLASH.sr().modify(|w| {
-        if w.erserr() {
-            w.set_erserr(true);
-        }
-        if w.pgperr() {
-            w.set_pgperr(true);
-        }
-        if w.pgaerr() {
-            w.set_pgaerr(true);
-        }
-        if w.wrperr() {
-            w.set_wrperr(true);
-        }
-        if w.eop() {
-            w.set_eop(true);
-        }
-    });
+    // read and write back the same value.
+    // This clears all "write 0 to clear" bits.
+    pac::FLASH.sr().modify(|_| {});
 }
 
 unsafe fn blocking_wait_ready() -> Result<(), Error> {

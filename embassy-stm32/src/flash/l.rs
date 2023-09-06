@@ -1,10 +1,13 @@
 use core::ptr::write_volatile;
-
-use atomic_polyfill::{fence, Ordering};
+use core::sync::atomic::{fence, Ordering};
 
 use super::{FlashRegion, FlashSector, FLASH_REGIONS, WRITE_SIZE};
 use crate::flash::Error;
 use crate::pac;
+
+pub const fn is_default_layout() -> bool {
+    true
+}
 
 pub const fn get_flash_regions() -> &'static [&'static FlashRegion] {
     &FLASH_REGIONS
@@ -39,14 +42,14 @@ pub(crate) unsafe fn unlock() {
     }
 }
 
-pub(crate) unsafe fn begin_write() {
+pub(crate) unsafe fn enable_blocking_write() {
     assert_eq!(0, WRITE_SIZE % 4);
 
     #[cfg(any(flash_wl, flash_wb, flash_l4))]
     pac::FLASH.cr().write(|w| w.set_pg(true));
 }
 
-pub(crate) unsafe fn end_write() {
+pub(crate) unsafe fn disable_blocking_write() {
     #[cfg(any(flash_wl, flash_wb, flash_l4))]
     pac::FLASH.cr().write(|w| w.set_pg(false));
 }
@@ -61,7 +64,7 @@ pub(crate) unsafe fn blocking_write(start_address: u32, buf: &[u8; WRITE_SIZE]) 
         fence(Ordering::SeqCst);
     }
 
-    blocking_wait_ready()
+    wait_ready_blocking()
 }
 
 pub(crate) unsafe fn blocking_erase_sector(sector: &FlashSector) -> Result<(), Error> {
@@ -94,7 +97,7 @@ pub(crate) unsafe fn blocking_erase_sector(sector: &FlashSector) -> Result<(), E
         });
     }
 
-    let ret: Result<(), Error> = blocking_wait_ready();
+    let ret: Result<(), Error> = wait_ready_blocking();
 
     #[cfg(any(flash_wl, flash_wb, flash_l4))]
     pac::FLASH.cr().modify(|w| w.set_per(false));
@@ -106,49 +109,16 @@ pub(crate) unsafe fn blocking_erase_sector(sector: &FlashSector) -> Result<(), E
     });
 
     clear_all_err();
-
     ret
 }
 
 pub(crate) unsafe fn clear_all_err() {
-    pac::FLASH.sr().modify(|w| {
-        #[cfg(any(flash_wl, flash_wb, flash_l4, flash_l0))]
-        if w.rderr() {
-            w.set_rderr(true);
-        }
-        #[cfg(any(flash_wl, flash_wb, flash_l4))]
-        if w.fasterr() {
-            w.set_fasterr(true);
-        }
-        #[cfg(any(flash_wl, flash_wb, flash_l4))]
-        if w.miserr() {
-            w.set_miserr(true);
-        }
-        #[cfg(any(flash_wl, flash_wb, flash_l4))]
-        if w.pgserr() {
-            w.set_pgserr(true);
-        }
-        if w.sizerr() {
-            w.set_sizerr(true);
-        }
-        if w.pgaerr() {
-            w.set_pgaerr(true);
-        }
-        if w.wrperr() {
-            w.set_wrperr(true);
-        }
-        #[cfg(any(flash_wl, flash_wb, flash_l4))]
-        if w.progerr() {
-            w.set_progerr(true);
-        }
-        #[cfg(any(flash_wl, flash_wb, flash_l4))]
-        if w.operr() {
-            w.set_operr(true);
-        }
-    });
+    // read and write back the same value.
+    // This clears all "write 0 to clear" bits.
+    pac::FLASH.sr().modify(|_| {});
 }
 
-unsafe fn blocking_wait_ready() -> Result<(), Error> {
+unsafe fn wait_ready_blocking() -> Result<(), Error> {
     loop {
         let sr = pac::FLASH.sr().read();
 

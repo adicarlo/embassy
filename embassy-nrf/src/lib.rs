@@ -1,9 +1,5 @@
 #![no_std]
-#![cfg_attr(
-    feature = "nightly",
-    feature(type_alias_impl_trait, async_fn_in_trait, impl_trait_projections)
-)]
-#![cfg_attr(feature = "nightly", allow(incomplete_features))]
+#![cfg_attr(feature = "nightly", feature(async_fn_in_trait, impl_trait_projections))]
 #![doc = include_str!("../README.md")]
 #![warn(missing_docs)]
 
@@ -97,21 +93,14 @@ pub mod wdt;
 #[cfg_attr(feature = "_nrf9160", path = "chips/nrf9160.rs")]
 mod chip;
 
-pub mod interrupt {
-    //! Interrupt definitions and macros to bind them.
-    pub use cortex_m::interrupt::{CriticalSection, Mutex};
-    pub use embassy_cortex_m::interrupt::{Binding, Handler, Interrupt, InterruptExt, Priority};
-
-    pub use crate::chip::irqs::*;
-
-    /// Macro to bind interrupts to handlers.
-    ///
-    /// This defines the right interrupt handlers, and creates a unit struct (like `struct Irqs;`)
-    /// and implements the right [`Binding`]s for it. You can pass this struct to drivers to
-    /// prove at compile-time that the right interrupts have been bound.
-    // developer note: this macro can't be in `embassy-cortex-m` due to the use of `$crate`.
-    #[macro_export]
-    macro_rules! bind_interrupts {
+/// Macro to bind interrupts to handlers.
+///
+/// This defines the right interrupt handlers, and creates a unit struct (like `struct Irqs;`)
+/// and implements the right [`Binding`]s for it. You can pass this struct to drivers to
+/// prove at compile-time that the right interrupts have been bound.
+// developer note: this macro can't be in `embassy-hal-internal` due to the use of `$crate`.
+#[macro_export]
+macro_rules! bind_interrupts {
         ($vis:vis struct $name:ident { $($irq:ident => $($handler:ty),*;)* }) => {
             $vis struct $name;
 
@@ -120,17 +109,16 @@ pub mod interrupt {
                 #[no_mangle]
                 unsafe extern "C" fn $irq() {
                     $(
-                        <$handler as $crate::interrupt::Handler<$crate::interrupt::$irq>>::on_interrupt();
+                        <$handler as $crate::interrupt::typelevel::Handler<$crate::interrupt::typelevel::$irq>>::on_interrupt();
                     )*
                 }
 
                 $(
-                    unsafe impl $crate::interrupt::Binding<$crate::interrupt::$irq, $handler> for $name {}
+                    unsafe impl $crate::interrupt::typelevel::Binding<$crate::interrupt::typelevel::$irq, $handler> for $name {}
                 )*
             )*
         };
     }
-}
 
 // Reexports
 
@@ -139,9 +127,10 @@ pub use chip::pac;
 #[cfg(not(feature = "unstable-pac"))]
 pub(crate) use chip::pac;
 pub use chip::{peripherals, Peripherals, EASY_DMA_SIZE};
-pub use embassy_cortex_m::executor;
-pub use embassy_cortex_m::interrupt::_export::interrupt;
-pub use embassy_hal_common::{into_ref, Peripheral, PeripheralRef};
+pub use embassy_hal_internal::{into_ref, Peripheral, PeripheralRef};
+
+pub use crate::chip::interrupt;
+pub use crate::pac::NVIC_PRIO_BITS;
 
 pub mod config {
     //! Configuration options used when initializing the HAL.
@@ -184,6 +173,34 @@ pub mod config {
         NotConfigured,
     }
 
+    /// Settings for enabling the built in DCDC converters.
+    #[cfg(not(any(feature = "_nrf5340", feature = "_nrf9160")))]
+    pub struct DcdcConfig {
+        /// Config for the first stage DCDC (VDDH -> VDD), if disabled LDO will be used.
+        #[cfg(feature = "nrf52840")]
+        pub reg0: bool,
+        /// Config for the second stage DCDC (VDD -> DEC4), if disabled LDO will be used.
+        pub reg1: bool,
+    }
+
+    /// Settings for enabling the built in DCDC converters.
+    #[cfg(feature = "_nrf5340-app")]
+    pub struct DcdcConfig {
+        /// Config for the high voltage stage, if disabled LDO will be used.
+        pub regh: bool,
+        /// Config for the main rail, if disabled LDO will be used.
+        pub regmain: bool,
+        /// Config for the radio rail, if disabled LDO will be used.
+        pub regradio: bool,
+    }
+
+    /// Settings for enabling the built in DCDC converter.
+    #[cfg(feature = "_nrf9160")]
+    pub struct DcdcConfig {
+        /// Config for the main rail, if disabled LDO will be used.
+        pub regmain: bool,
+    }
+
     /// Configuration for peripherals. Default configuration should work on any nRF chip.
     #[non_exhaustive]
     pub struct Config {
@@ -191,6 +208,9 @@ pub mod config {
         pub hfclk_source: HfclkSource,
         /// Low frequency clock source.
         pub lfclk_source: LfclkSource,
+        #[cfg(not(feature = "_nrf5340-net"))]
+        /// DCDC configuration.
+        pub dcdc: DcdcConfig,
         /// GPIOTE interrupt priority. Should be lower priority than softdevice if used.
         #[cfg(feature = "gpiote")]
         pub gpiote_interrupt_priority: crate::interrupt::Priority,
@@ -209,6 +229,20 @@ pub mod config {
                 // xtals if they know they have them.
                 hfclk_source: HfclkSource::Internal,
                 lfclk_source: LfclkSource::InternalRC,
+                #[cfg(not(any(feature = "_nrf5340", feature = "_nrf9160")))]
+                dcdc: DcdcConfig {
+                    #[cfg(feature = "nrf52840")]
+                    reg0: false,
+                    reg1: false,
+                },
+                #[cfg(feature = "_nrf5340-app")]
+                dcdc: DcdcConfig {
+                    regh: false,
+                    regmain: false,
+                    regradio: false,
+                },
+                #[cfg(feature = "_nrf9160")]
+                dcdc: DcdcConfig { regmain: false },
                 #[cfg(feature = "gpiote")]
                 gpiote_interrupt_priority: crate::interrupt::Priority::P0,
                 #[cfg(feature = "_time-driver")]
@@ -376,13 +410,13 @@ pub fn init(config: config::Config) -> Peripherals {
             warn!(
                 "You have requested enabling chip reset functionality on the reset pin, by not enabling the Cargo feature `reset-pin-as-gpio`.\n\
                 However, UICR is already programmed to some other setting, and can't be changed without erasing it.\n\
-                To fix this, erase UICR manually, for example using `probe-rs-cli erase` or `nrfjprog --eraseuicr`."
+                To fix this, erase UICR manually, for example using `probe-rs erase` or `nrfjprog --eraseuicr`."
             );
             #[cfg(feature = "reset-pin-as-gpio")]
             warn!(
                 "You have requested using the reset pin as GPIO, by enabling the Cargo feature `reset-pin-as-gpio`.\n\
                 However, UICR is already programmed to some other setting, and can't be changed without erasing it.\n\
-                To fix this, erase UICR manually, for example using `probe-rs-cli erase` or `nrfjprog --eraseuicr`."
+                To fix this, erase UICR manually, for example using `probe-rs erase` or `nrfjprog --eraseuicr`."
             );
         }
     }
@@ -398,7 +432,7 @@ pub fn init(config: config::Config) -> Peripherals {
             warn!(
                 "You have requested to use P0.09 and P0.10 pins for NFC, by not enabling the Cargo feature `nfc-pins-as-gpio`.\n\
                 However, UICR is already programmed to some other setting, and can't be changed without erasing it.\n\
-                To fix this, erase UICR manually, for example using `probe-rs-cli erase` or `nrfjprog --eraseuicr`."
+                To fix this, erase UICR manually, for example using `probe-rs erase` or `nrfjprog --eraseuicr`."
             );
         }
     }
@@ -453,6 +487,41 @@ pub fn init(config: config::Config) -> Peripherals {
     r.events_lfclkstarted.write(|w| unsafe { w.bits(0) });
     r.tasks_lfclkstart.write(|w| unsafe { w.bits(1) });
     while r.events_lfclkstarted.read().bits() == 0 {}
+
+    #[cfg(not(any(feature = "_nrf5340", feature = "_nrf9160")))]
+    {
+        // Setup DCDCs.
+        let pwr = unsafe { &*pac::POWER::ptr() };
+        #[cfg(feature = "nrf52840")]
+        if config.dcdc.reg0 {
+            pwr.dcdcen0.write(|w| w.dcdcen().set_bit());
+        }
+        if config.dcdc.reg1 {
+            pwr.dcdcen.write(|w| w.dcdcen().set_bit());
+        }
+    }
+    #[cfg(feature = "_nrf9160")]
+    {
+        // Setup DCDC.
+        let reg = unsafe { &*pac::REGULATORS::ptr() };
+        if config.dcdc.regmain {
+            reg.dcdcen.write(|w| w.dcdcen().set_bit());
+        }
+    }
+    #[cfg(feature = "_nrf5340-app")]
+    {
+        // Setup DCDC.
+        let reg = unsafe { &*pac::REGULATORS::ptr() };
+        if config.dcdc.regh {
+            reg.vregh.dcdcen.write(|w| w.dcdcen().set_bit());
+        }
+        if config.dcdc.regmain {
+            reg.vregmain.dcdcen.write(|w| w.dcdcen().set_bit());
+        }
+        if config.dcdc.regradio {
+            reg.vregradio.dcdcen.write(|w| w.dcdcen().set_bit());
+        }
+    }
 
     // Init GPIOTE
     #[cfg(feature = "gpiote")]

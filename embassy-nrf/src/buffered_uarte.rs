@@ -15,22 +15,21 @@ use core::slice;
 use core::sync::atomic::{compiler_fence, AtomicU8, AtomicUsize, Ordering};
 use core::task::Poll;
 
-use embassy_cortex_m::interrupt::Interrupt;
-use embassy_hal_common::atomic_ring_buffer::RingBuffer;
-use embassy_hal_common::{into_ref, PeripheralRef};
+use embassy_hal_internal::atomic_ring_buffer::RingBuffer;
+use embassy_hal_internal::{into_ref, PeripheralRef};
 use embassy_sync::waitqueue::AtomicWaker;
 // Re-export SVD variants to allow user to directly set values
 pub use pac::uarte0::{baudrate::BAUDRATE_A as Baudrate, config::PARITY_A as Parity};
 
 use crate::gpio::sealed::Pin;
 use crate::gpio::{self, AnyPin, Pin as GpioPin, PselBits};
-use crate::interrupt::{self, InterruptExt};
+use crate::interrupt::typelevel::Interrupt;
 use crate::ppi::{
     self, AnyConfigurableChannel, AnyGroup, Channel, ConfigurableChannel, Event, Group, Ppi, PpiGroup, Task,
 };
 use crate::timer::{Instance as TimerInstance, Timer};
 use crate::uarte::{apply_workaround_for_enable_anomaly, Config, Instance as UarteInstance};
-use crate::{pac, Peripheral};
+use crate::{interrupt, pac, Peripheral};
 
 mod sealed {
     use super::*;
@@ -77,7 +76,7 @@ pub struct InterruptHandler<U: UarteInstance> {
     _phantom: PhantomData<U>,
 }
 
-impl<U: UarteInstance> interrupt::Handler<U::Interrupt> for InterruptHandler<U> {
+impl<U: UarteInstance> interrupt::typelevel::Handler<U::Interrupt> for InterruptHandler<U> {
     unsafe fn on_interrupt() {
         //trace!("irq: start");
         let r = U::regs();
@@ -202,7 +201,7 @@ impl<'d, U: UarteInstance, T: TimerInstance> BufferedUarte<'d, U, T> {
         ppi_ch1: impl Peripheral<P = impl ConfigurableChannel> + 'd,
         ppi_ch2: impl Peripheral<P = impl ConfigurableChannel> + 'd,
         ppi_group: impl Peripheral<P = impl Group> + 'd,
-        _irq: impl interrupt::Binding<U::Interrupt, InterruptHandler<U>> + 'd,
+        _irq: impl interrupt::typelevel::Binding<U::Interrupt, InterruptHandler<U>> + 'd,
         rxd: impl Peripheral<P = impl GpioPin> + 'd,
         txd: impl Peripheral<P = impl GpioPin> + 'd,
         config: Config,
@@ -237,7 +236,7 @@ impl<'d, U: UarteInstance, T: TimerInstance> BufferedUarte<'d, U, T> {
         ppi_ch1: impl Peripheral<P = impl ConfigurableChannel> + 'd,
         ppi_ch2: impl Peripheral<P = impl ConfigurableChannel> + 'd,
         ppi_group: impl Peripheral<P = impl Group> + 'd,
-        _irq: impl interrupt::Binding<U::Interrupt, InterruptHandler<U>> + 'd,
+        _irq: impl interrupt::typelevel::Binding<U::Interrupt, InterruptHandler<U>> + 'd,
         rxd: impl Peripheral<P = impl GpioPin> + 'd,
         txd: impl Peripheral<P = impl GpioPin> + 'd,
         cts: impl Peripheral<P = impl GpioPin> + 'd,
@@ -362,8 +361,8 @@ impl<'d, U: UarteInstance, T: TimerInstance> BufferedUarte<'d, U, T> {
         ppi_ch2.disable();
         ppi_group.add_channel(&ppi_ch2);
 
-        unsafe { U::Interrupt::steal() }.pend();
-        unsafe { U::Interrupt::steal() }.enable();
+        U::Interrupt::pend();
+        unsafe { U::Interrupt::enable() };
 
         Self {
             _peri: peri,
@@ -375,7 +374,7 @@ impl<'d, U: UarteInstance, T: TimerInstance> BufferedUarte<'d, U, T> {
     }
 
     fn pend_irq() {
-        unsafe { <U::Interrupt as Interrupt>::steal() }.pend()
+        U::Interrupt::pend()
     }
 
     /// Adjust the baud rate to the provided value.
@@ -573,37 +572,37 @@ impl<'u, 'd, U: UarteInstance, T: TimerInstance> BufferedUarteRx<'u, 'd, U, T> {
 mod _embedded_io {
     use super::*;
 
-    impl embedded_io::Error for Error {
-        fn kind(&self) -> embedded_io::ErrorKind {
+    impl embedded_io_async::Error for Error {
+        fn kind(&self) -> embedded_io_async::ErrorKind {
             match *self {}
         }
     }
 
-    impl<'d, U: UarteInstance, T: TimerInstance> embedded_io::Io for BufferedUarte<'d, U, T> {
+    impl<'d, U: UarteInstance, T: TimerInstance> embedded_io_async::ErrorType for BufferedUarte<'d, U, T> {
         type Error = Error;
     }
 
-    impl<'u, 'd, U: UarteInstance, T: TimerInstance> embedded_io::Io for BufferedUarteRx<'u, 'd, U, T> {
+    impl<'u, 'd, U: UarteInstance, T: TimerInstance> embedded_io_async::ErrorType for BufferedUarteRx<'u, 'd, U, T> {
         type Error = Error;
     }
 
-    impl<'u, 'd, U: UarteInstance, T: TimerInstance> embedded_io::Io for BufferedUarteTx<'u, 'd, U, T> {
+    impl<'u, 'd, U: UarteInstance, T: TimerInstance> embedded_io_async::ErrorType for BufferedUarteTx<'u, 'd, U, T> {
         type Error = Error;
     }
 
-    impl<'d, U: UarteInstance, T: TimerInstance> embedded_io::asynch::Read for BufferedUarte<'d, U, T> {
+    impl<'d, U: UarteInstance, T: TimerInstance> embedded_io_async::Read for BufferedUarte<'d, U, T> {
         async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
             self.inner_read(buf).await
         }
     }
 
-    impl<'u, 'd: 'u, U: UarteInstance, T: TimerInstance> embedded_io::asynch::Read for BufferedUarteRx<'u, 'd, U, T> {
+    impl<'u, 'd: 'u, U: UarteInstance, T: TimerInstance> embedded_io_async::Read for BufferedUarteRx<'u, 'd, U, T> {
         async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
             self.inner.inner_read(buf).await
         }
     }
 
-    impl<'d, U: UarteInstance, T: TimerInstance> embedded_io::asynch::BufRead for BufferedUarte<'d, U, T> {
+    impl<'d, U: UarteInstance, T: TimerInstance> embedded_io_async::BufRead for BufferedUarte<'d, U, T> {
         async fn fill_buf(&mut self) -> Result<&[u8], Self::Error> {
             self.inner_fill_buf().await
         }
@@ -613,7 +612,7 @@ mod _embedded_io {
         }
     }
 
-    impl<'u, 'd: 'u, U: UarteInstance, T: TimerInstance> embedded_io::asynch::BufRead for BufferedUarteRx<'u, 'd, U, T> {
+    impl<'u, 'd: 'u, U: UarteInstance, T: TimerInstance> embedded_io_async::BufRead for BufferedUarteRx<'u, 'd, U, T> {
         async fn fill_buf(&mut self) -> Result<&[u8], Self::Error> {
             self.inner.inner_fill_buf().await
         }
@@ -623,7 +622,7 @@ mod _embedded_io {
         }
     }
 
-    impl<'d, U: UarteInstance, T: TimerInstance> embedded_io::asynch::Write for BufferedUarte<'d, U, T> {
+    impl<'d, U: UarteInstance, T: TimerInstance> embedded_io_async::Write for BufferedUarte<'d, U, T> {
         async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
             self.inner_write(buf).await
         }
@@ -633,7 +632,7 @@ mod _embedded_io {
         }
     }
 
-    impl<'u, 'd: 'u, U: UarteInstance, T: TimerInstance> embedded_io::asynch::Write for BufferedUarteTx<'u, 'd, U, T> {
+    impl<'u, 'd: 'u, U: UarteInstance, T: TimerInstance> embedded_io_async::Write for BufferedUarteTx<'u, 'd, U, T> {
         async fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
             self.inner.inner_write(buf).await
         }
@@ -646,6 +645,8 @@ mod _embedded_io {
 
 impl<'a, U: UarteInstance, T: TimerInstance> Drop for BufferedUarte<'a, U, T> {
     fn drop(&mut self) {
+        self._ppi_group.disable_all();
+
         let r = U::regs();
 
         self.timer.stop();

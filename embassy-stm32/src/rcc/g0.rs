@@ -1,5 +1,6 @@
+pub use super::bus::{AHBPrescaler, APBPrescaler};
 use crate::pac::flash::vals::Latency;
-use crate::pac::rcc::vals::{self, Hpre, Hsidiv, Ppre, Sw};
+use crate::pac::rcc::vals::{self, Hsidiv, Ppre, Sw};
 use crate::pac::{FLASH, PWR, RCC};
 use crate::rcc::{set_freqs, Clocks};
 use crate::time::Hertz;
@@ -172,58 +173,6 @@ impl From<Pllr> for u32 {
     }
 }
 
-/// AHB prescaler
-#[derive(Clone, Copy, PartialEq)]
-pub enum AHBPrescaler {
-    NotDivided,
-    Div2,
-    Div4,
-    Div8,
-    Div16,
-    Div64,
-    Div128,
-    Div256,
-    Div512,
-}
-
-/// APB prescaler
-#[derive(Clone, Copy)]
-pub enum APBPrescaler {
-    NotDivided,
-    Div2,
-    Div4,
-    Div8,
-    Div16,
-}
-
-impl Into<Ppre> for APBPrescaler {
-    fn into(self) -> Ppre {
-        match self {
-            APBPrescaler::NotDivided => Ppre::DIV1,
-            APBPrescaler::Div2 => Ppre::DIV2,
-            APBPrescaler::Div4 => Ppre::DIV4,
-            APBPrescaler::Div8 => Ppre::DIV8,
-            APBPrescaler::Div16 => Ppre::DIV16,
-        }
-    }
-}
-
-impl Into<Hpre> for AHBPrescaler {
-    fn into(self) -> Hpre {
-        match self {
-            AHBPrescaler::NotDivided => Hpre::DIV1,
-            AHBPrescaler::Div2 => Hpre::DIV2,
-            AHBPrescaler::Div4 => Hpre::DIV4,
-            AHBPrescaler::Div8 => Hpre::DIV8,
-            AHBPrescaler::Div16 => Hpre::DIV16,
-            AHBPrescaler::Div64 => Hpre::DIV64,
-            AHBPrescaler::Div128 => Hpre::DIV128,
-            AHBPrescaler::Div256 => Hpre::DIV256,
-            AHBPrescaler::Div512 => Hpre::DIV512,
-        }
-    }
-}
-
 /// Clocks configutation
 pub struct Config {
     pub mux: ClockSrc,
@@ -245,7 +194,7 @@ impl Default for Config {
 }
 
 impl PllConfig {
-    pub(crate) unsafe fn init(self) -> u32 {
+    pub(crate) fn init(self) -> u32 {
         assert!(self.n >= 8 && self.n <= 86);
         let (src, input_freq) = match self.source {
             PllSrc::HSI16 => (vals::Pllsrc::HSI16, HSI_FREQ.0),
@@ -344,7 +293,7 @@ pub(crate) unsafe fn init(config: Config) {
             });
             while !RCC.cr().read().hsirdy() {}
 
-            (HSI_FREQ.0 >> div.0, Sw::HSI)
+            (HSI_FREQ.0 >> div.to_bits(), Sw::HSI)
         }
         ClockSrc::HSE(freq) => {
             // Enable HSE
@@ -381,7 +330,7 @@ pub(crate) unsafe fn init(config: Config) {
     let mut set_flash_latency_after = false;
     FLASH.acr().modify(|w| {
         // Is the current flash latency less than what we need at the new SYSCLK?
-        if w.latency().0 <= target_flash_latency.0 {
+        if w.latency().to_bits() <= target_flash_latency.to_bits() {
             // We must increase the number of wait states now
             w.set_latency(target_flash_latency)
         } else {
@@ -395,12 +344,12 @@ pub(crate) unsafe fn init(config: Config) {
         // > Flash memory.
         //
         // Enable flash prefetching if we have at least one wait state, and disable it otherwise.
-        w.set_prften(target_flash_latency.0 > 0);
+        w.set_prften(target_flash_latency.to_bits() > 0);
     });
 
     if !set_flash_latency_after {
         // Spin until the effective flash latency is compatible with the clock change
-        while FLASH.acr().read().latency().0 < target_flash_latency.0 {}
+        while FLASH.acr().read().latency().to_bits() < target_flash_latency.to_bits() {}
     }
 
     // Configure SYSCLK source, HCLK divisor, and PCLK divisor all at once
@@ -425,25 +374,14 @@ pub(crate) unsafe fn init(config: Config) {
         FLASH.acr().modify(|w| w.set_latency(target_flash_latency));
     }
 
-    let ahb_div = match config.ahb_pre {
-        AHBPrescaler::NotDivided => 1,
-        AHBPrescaler::Div2 => 2,
-        AHBPrescaler::Div4 => 4,
-        AHBPrescaler::Div8 => 8,
-        AHBPrescaler::Div16 => 16,
-        AHBPrescaler::Div64 => 64,
-        AHBPrescaler::Div128 => 128,
-        AHBPrescaler::Div256 => 256,
-        AHBPrescaler::Div512 => 512,
-    };
-    let ahb_freq = sys_clk / ahb_div;
+    let ahb_freq = Hertz(sys_clk) / config.ahb_pre;
 
     let (apb_freq, apb_tim_freq) = match config.apb_pre {
-        APBPrescaler::NotDivided => (ahb_freq, ahb_freq),
+        APBPrescaler::NotDivided => (ahb_freq.0, ahb_freq.0),
         pre => {
             let pre: Ppre = pre.into();
-            let pre: u8 = 1 << (pre.0 - 3);
-            let freq = ahb_freq / pre as u32;
+            let pre: u8 = 1 << (pre.to_bits() - 3);
+            let freq = ahb_freq.0 / pre as u32;
             (freq, freq * 2)
         }
     };
@@ -455,7 +393,7 @@ pub(crate) unsafe fn init(config: Config) {
 
     set_freqs(Clocks {
         sys: Hertz(sys_clk),
-        ahb1: Hertz(ahb_freq),
+        ahb1: ahb_freq,
         apb1: Hertz(apb_freq),
         apb1_tim: Hertz(apb_tim_freq),
     });

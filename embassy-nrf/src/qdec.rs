@@ -6,12 +6,11 @@ use core::future::poll_fn;
 use core::marker::PhantomData;
 use core::task::Poll;
 
-use embassy_cortex_m::interrupt::Interrupt;
-use embassy_hal_common::{into_ref, PeripheralRef};
+use embassy_hal_internal::{into_ref, PeripheralRef};
 
 use crate::gpio::sealed::Pin as _;
 use crate::gpio::{AnyPin, Pin as GpioPin};
-use crate::interrupt::InterruptExt;
+use crate::interrupt::typelevel::Interrupt;
 use crate::{interrupt, Peripheral};
 
 /// Quadrature decoder driver.
@@ -51,7 +50,7 @@ pub struct InterruptHandler<T: Instance> {
     _phantom: PhantomData<T>,
 }
 
-impl<T: Instance> interrupt::Handler<T::Interrupt> for InterruptHandler<T> {
+impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandler<T> {
     unsafe fn on_interrupt() {
         T::regs().intenclr.write(|w| w.reportrdy().clear());
         T::state().waker.wake();
@@ -62,7 +61,7 @@ impl<'d, T: Instance> Qdec<'d, T> {
     /// Create a new QDEC.
     pub fn new(
         qdec: impl Peripheral<P = T> + 'd,
-        _irq: impl interrupt::Binding<T::Interrupt, InterruptHandler<T>> + 'd,
+        _irq: impl interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>> + 'd,
         a: impl Peripheral<P = impl GpioPin> + 'd,
         b: impl Peripheral<P = impl GpioPin> + 'd,
         config: Config,
@@ -74,7 +73,7 @@ impl<'d, T: Instance> Qdec<'d, T> {
     /// Create a new QDEC, with a pin for LED output.
     pub fn new_with_led(
         qdec: impl Peripheral<P = T> + 'd,
-        _irq: impl interrupt::Binding<T::Interrupt, InterruptHandler<T>> + 'd,
+        _irq: impl interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>> + 'd,
         a: impl Peripheral<P = impl GpioPin> + 'd,
         b: impl Peripheral<P = impl GpioPin> + 'd,
         led: impl Peripheral<P = impl GpioPin> + 'd,
@@ -134,8 +133,8 @@ impl<'d, T: Instance> Qdec<'d, T> {
             SamplePeriod::_131ms => w.sampleper()._131ms(),
         });
 
-        unsafe { T::Interrupt::steal() }.unpend();
-        unsafe { T::Interrupt::steal() }.enable();
+        T::Interrupt::unpend();
+        unsafe { T::Interrupt::enable() };
 
         // Enable peripheral
         r.enable.write(|w| w.enable().set_bit());
@@ -154,10 +153,19 @@ impl<'d, T: Instance> Qdec<'d, T> {
     /// # Example
     ///
     /// ```no_run
-    /// let irq = interrupt::take!(QDEC);
+    /// use embassy_nrf::qdec::{self, Qdec};
+    /// use embassy_nrf::{bind_interrupts, peripherals};
+    ///
+    /// bind_interrupts!(struct Irqs {
+    ///     QDEC => qdec::InterruptHandler<peripherals::QDEC>;
+    /// });
+    ///
+    /// # async {
+    /// # let p: embassy_nrf::Peripherals = todo!();
     /// let config = qdec::Config::default();
-    /// let mut q = Qdec::new(p.QDEC, p.P0_31, p.P0_30, config);
+    /// let mut q = Qdec::new(p.QDEC, Irqs, p.P0_31, p.P0_30, config);
     /// let delta = q.read().await;
+    /// # };
     /// ```
     pub async fn read(&mut self) -> i16 {
         let t = T::regs();
@@ -263,7 +271,7 @@ pub(crate) mod sealed {
 /// qdec peripheral instance.
 pub trait Instance: Peripheral<P = Self> + sealed::Instance + 'static + Send {
     /// Interrupt for this peripheral.
-    type Interrupt: Interrupt;
+    type Interrupt: interrupt::typelevel::Interrupt;
 }
 
 macro_rules! impl_qdec {
@@ -278,7 +286,7 @@ macro_rules! impl_qdec {
             }
         }
         impl crate::qdec::Instance for peripherals::$type {
-            type Interrupt = crate::interrupt::$irq;
+            type Interrupt = crate::interrupt::typelevel::$irq;
         }
     };
 }

@@ -2,6 +2,10 @@
 
 use super::{Error, FlashRegion, FlashSector, FLASH_REGIONS, WRITE_SIZE};
 
+pub const fn is_default_layout() -> bool {
+    true
+}
+
 pub const fn get_flash_regions() -> &'static [&'static FlashRegion] {
     &FLASH_REGIONS
 }
@@ -12,10 +16,10 @@ pub(crate) unsafe fn lock() {
 pub(crate) unsafe fn unlock() {
     unimplemented!();
 }
-pub(crate) unsafe fn begin_write() {
+pub(crate) unsafe fn enable_blocking_write() {
     unimplemented!();
 }
-pub(crate) unsafe fn end_write() {
+pub(crate) unsafe fn disable_blocking_write() {
     unimplemented!();
 }
 pub(crate) unsafe fn blocking_write(_start_address: u32, _buf: &[u8; WRITE_SIZE]) -> Result<(), Error> {

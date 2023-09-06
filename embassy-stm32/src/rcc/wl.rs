@@ -1,4 +1,7 @@
-use crate::pac::{FLASH, RCC};
+pub use super::bus::{AHBPrescaler, APBPrescaler, VoltageScale};
+use crate::pac::rcc::vals::Adcsel;
+use crate::pac::{FLASH, PWR, RCC};
+use crate::rcc::bd::{BackupDomain, RtcClockSource};
 use crate::rcc::{set_freqs, Clocks};
 use crate::time::Hertz;
 
@@ -72,9 +75,9 @@ impl MSIRange {
 
     fn vos(&self) -> VoltageScale {
         if self > &MSIRange::Range8 {
-            VoltageScale::Range1
+            VoltageScale::Scale0
         } else {
-            VoltageScale::Range2
+            VoltageScale::Scale1
         }
     }
 }
@@ -104,75 +107,26 @@ impl Into<u8> for MSIRange {
     }
 }
 
-/// Voltage Scale
-///
-/// Represents the voltage range feeding the CPU core. The maximum core
-/// clock frequency depends on this value.
-#[derive(Copy, Clone, PartialEq)]
-pub enum VoltageScale {
-    Range1,
-    Range2,
-}
-
-/// AHB prescaler
-#[derive(Clone, Copy, PartialEq)]
-pub enum AHBPrescaler {
-    NotDivided,
-    Div2,
-    Div3,
-    Div4,
-    Div5,
-    Div6,
-    Div8,
-    Div10,
-    Div16,
-    Div32,
-    Div64,
-    Div128,
-    Div256,
-    Div512,
-}
-
-/// APB prescaler
 #[derive(Clone, Copy)]
-pub enum APBPrescaler {
-    NotDivided,
-    Div2,
-    Div4,
-    Div8,
-    Div16,
+pub enum AdcClockSource {
+    HSI16,
+    PLLPCLK,
+    SYSCLK,
 }
 
-impl Into<u8> for APBPrescaler {
-    fn into(self) -> u8 {
+impl AdcClockSource {
+    pub fn adcsel(&self) -> Adcsel {
         match self {
-            APBPrescaler::NotDivided => 1,
-            APBPrescaler::Div2 => 0x04,
-            APBPrescaler::Div4 => 0x05,
-            APBPrescaler::Div8 => 0x06,
-            APBPrescaler::Div16 => 0x07,
+            AdcClockSource::HSI16 => Adcsel::HSI16,
+            AdcClockSource::PLLPCLK => Adcsel::PLLPCLK,
+            AdcClockSource::SYSCLK => Adcsel::SYSCLK,
         }
     }
 }
 
-impl Into<u8> for AHBPrescaler {
-    fn into(self) -> u8 {
-        match self {
-            AHBPrescaler::NotDivided => 0x0,
-            AHBPrescaler::Div2 => 0x08,
-            AHBPrescaler::Div3 => 0x01,
-            AHBPrescaler::Div4 => 0x09,
-            AHBPrescaler::Div5 => 0x02,
-            AHBPrescaler::Div6 => 0x05,
-            AHBPrescaler::Div8 => 0x0a,
-            AHBPrescaler::Div10 => 0x06,
-            AHBPrescaler::Div16 => 0x0b,
-            AHBPrescaler::Div32 => 0x07,
-            AHBPrescaler::Div64 => 0x0c,
-            AHBPrescaler::Div128 => 0x0d,
-            AHBPrescaler::Div256 => 0x0e,
-            AHBPrescaler::Div512 => 0x0f,
-        }
+impl Default for AdcClockSource {
+    fn default() -> Self {
+        Self::HSI16
     }
 }
 
@@ -184,6 +138,9 @@ pub struct Config {
     pub apb1_pre: APBPrescaler,
     pub apb2_pre: APBPrescaler,
     pub enable_lsi: bool,
+    pub enable_rtc_apb: bool,
+    pub rtc_mux: RtcClockSource,
+    pub adc_clock_source: AdcClockSource,
 }
 
 impl Default for Config {
@@ -196,14 +153,25 @@ impl Default for Config {
             apb1_pre: APBPrescaler::NotDivided,
             apb2_pre: APBPrescaler::NotDivided,
             enable_lsi: false,
+            enable_rtc_apb: false,
+            rtc_mux: RtcClockSource::LSI,
+            adc_clock_source: AdcClockSource::default(),
         }
     }
 }
 
+#[repr(u8)]
+pub enum Lsedrv {
+    Low = 0,
+    MediumLow = 1,
+    MediumHigh = 2,
+    High = 3,
+}
+
 pub(crate) unsafe fn init(config: Config) {
     let (sys_clk, sw, vos) = match config.mux {
-        ClockSrc::HSI16 => (HSI_FREQ.0, 0x01, VoltageScale::Range2),
-        ClockSrc::HSE32 => (HSE32_FREQ.0, 0x02, VoltageScale::Range1),
+        ClockSrc::HSI16 => (HSI_FREQ.0, 0x01, VoltageScale::Scale1),
+        ClockSrc::HSE32 => (HSE32_FREQ.0, 0x02, VoltageScale::Scale0),
         ClockSrc::MSI(range) => (range.freq(), 0x00, range.vos()),
     };
 
@@ -248,12 +216,12 @@ pub(crate) unsafe fn init(config: Config) {
     // Adjust flash latency
     let flash_clk_src_freq: u32 = shd_ahb_freq;
     let ws = match vos {
-        VoltageScale::Range1 => match flash_clk_src_freq {
+        VoltageScale::Scale0 => match flash_clk_src_freq {
             0..=18_000_000 => 0b000,
             18_000_001..=36_000_000 => 0b001,
             _ => 0b010,
         },
-        VoltageScale::Range2 => match flash_clk_src_freq {
+        VoltageScale::Scale1 => match flash_clk_src_freq {
             0..=6_000_000 => 0b000,
             6_000_001..=12_000_000 => 0b001,
             _ => 0b010,
@@ -265,6 +233,37 @@ pub(crate) unsafe fn init(config: Config) {
     });
 
     while FLASH.acr().read().latency() != ws {}
+
+    match config.rtc_mux {
+        RtcClockSource::LSE => {
+            // 1. Unlock the backup domain
+            PWR.cr1().modify(|w| w.set_dbp(true));
+
+            // 2. Setup the LSE
+            RCC.bdcr().modify(|w| {
+                // Enable LSE
+                w.set_lseon(true);
+                // Max drive strength
+                // TODO: should probably be settable
+                w.set_lsedrv(Lsedrv::High as u8); //---// PAM - should not be commented
+            });
+
+            // Wait until LSE is running
+            while !RCC.bdcr().read().lserdy() {}
+
+            BackupDomain::set_rtc_clock_source(RtcClockSource::LSE);
+        }
+        RtcClockSource::LSI => {
+            // Turn on the internal 32 kHz LSI oscillator
+            RCC.csr().modify(|w| w.set_lsion(true));
+
+            // Wait until LSI is running
+            while !RCC.csr().read().lsirdy() {}
+
+            BackupDomain::set_rtc_clock_source(RtcClockSource::LSI);
+        }
+        _ => unreachable!(),
+    }
 
     match config.mux {
         ClockSrc::HSI16 => {
@@ -287,9 +286,24 @@ pub(crate) unsafe fn init(config: Config) {
                 w.set_msirgsel(true);
                 w.set_msirange(range.into());
                 w.set_msion(true);
+
+                if let RtcClockSource::LSE = config.rtc_mux {
+                    // If LSE is enabled, enable calibration of MSI
+                    w.set_msipllen(true);
+                } else {
+                    w.set_msipllen(false);
+                }
             });
             while !RCC.cr().read().msirdy() {}
         }
+    }
+
+    if config.enable_rtc_apb {
+        // enable peripheral clock for communication
+        crate::pac::RCC.apb1enr1().modify(|w| w.set_rtcapben(true));
+
+        // read to allow the pwr clock to enable
+        crate::pac::PWR.cr1().read();
     }
 
     RCC.extcfgr().modify(|w| {
@@ -310,6 +324,9 @@ pub(crate) unsafe fn init(config: Config) {
         w.set_ppre1(config.apb1_pre.into());
         w.set_ppre2(config.apb2_pre.into());
     });
+
+    // ADC clock MUX
+    RCC.ccipr().modify(|w| w.set_adcsel(config.adc_clock_source.adcsel()));
 
     // TODO: switch voltage range
 

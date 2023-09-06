@@ -1,6 +1,6 @@
 use core::marker::PhantomData;
 
-use embassy_hal_common::into_ref;
+use embassy_hal_internal::into_ref;
 
 use crate::gpio::sealed::AFType;
 use crate::gpio::{Pull, Speed};
@@ -16,7 +16,7 @@ unsafe impl<'d, T> stm32_fmc::FmcPeripheral for Fmc<'d, T>
 where
     T: Instance,
 {
-    const REGISTERS: *const () = T::REGS.0 as *const _;
+    const REGISTERS: *const () = T::REGS.as_ptr() as *const _;
 
     fn enable(&mut self) {
         <T as crate::rcc::sealed::RccPeripheral>::enable();
@@ -28,9 +28,7 @@ where
         // fsmc v1, v2 and v3 does not have the fmcen bit
         // This is a "not" because it is expected that all future versions have this bit
         #[cfg(not(any(fmc_v1x3, fmc_v2x1, fsmc_v1x0, fsmc_v1x3, fsmc_v2x3, fsmc_v3x1)))]
-        unsafe {
-            T::REGS.bcr1().modify(|r| r.set_fmcen(true))
-        };
+        T::REGS.bcr1().modify(|r| r.set_fmcen(true));
     }
 
     fn source_clock_hz(&self) -> u32 {
@@ -67,7 +65,7 @@ macro_rules! fmc_sdram_constructor {
             chip: CHIP
         ) -> stm32_fmc::Sdram<Fmc<'d, T>, CHIP> {
 
-        critical_section::with(|_| unsafe {
+        critical_section::with(|_| {
             config_pins!(
                 $($addr_pin_name),*,
                 $($ba_pin_name),*,
@@ -88,6 +86,24 @@ macro_rules! fmc_sdram_constructor {
 }
 
 impl<'d, T: Instance> Fmc<'d, T> {
+    fmc_sdram_constructor!(sdram_a12bits_d16bits_4banks_bank1: (
+        bank: stm32_fmc::SdramTargetBank::Bank1,
+        addr: [
+            (a0: A0Pin), (a1: A1Pin), (a2: A2Pin), (a3: A3Pin), (a4: A4Pin), (a5: A5Pin), (a6: A6Pin), (a7: A7Pin), (a8: A8Pin), (a9: A9Pin), (a10: A10Pin), (a11: A11Pin)
+        ],
+        ba: [(ba0: BA0Pin), (ba1: BA1Pin)],
+        d: [
+            (d0: D0Pin), (d1: D1Pin), (d2: D2Pin), (d3: D3Pin), (d4: D4Pin), (d5: D5Pin), (d6: D6Pin), (d7: D7Pin),
+            (d8: D8Pin), (d9: D9Pin), (d10: D10Pin), (d11: D11Pin), (d12: D12Pin), (d13: D13Pin), (d14: D14Pin), (d15: D15Pin)
+        ],
+        nbl: [
+            (nbl0: NBL0Pin), (nbl1: NBL1Pin)
+        ],
+        ctrl: [
+            (sdcke: SDCKE0Pin), (sdclk: SDCLKPin), (sdncas: SDNCASPin), (sdne: SDNE0Pin), (sdnras: SDNRASPin), (sdnwe: SDNWEPin)
+        ]
+    ));
+
     fmc_sdram_constructor!(sdram_a12bits_d32bits_4banks_bank1: (
         bank: stm32_fmc::SdramTargetBank::Bank1,
         addr: [

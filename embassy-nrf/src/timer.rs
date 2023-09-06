@@ -6,9 +6,8 @@
 
 #![macro_use]
 
-use embassy_hal_common::{into_ref, PeripheralRef};
+use embassy_hal_internal::{into_ref, PeripheralRef};
 
-use crate::interrupt::Interrupt;
 use crate::ppi::{Event, Task};
 use crate::{pac, Peripheral};
 
@@ -29,7 +28,7 @@ pub(crate) mod sealed {
 /// Basic Timer instance.
 pub trait Instance: Peripheral<P = Self> + sealed::Instance + 'static + Send {
     /// Interrupt for this peripheral.
-    type Interrupt: Interrupt;
+    type Interrupt: crate::interrupt::typelevel::Interrupt;
 }
 
 /// Extended timer instance.
@@ -44,7 +43,7 @@ macro_rules! impl_timer {
             }
         }
         impl crate::timer::Instance for peripherals::$type {
-            type Interrupt = crate::interrupt::$irq;
+            type Interrupt = crate::interrupt::typelevel::$irq;
         }
     };
     ($type:ident, $pac_type:ident, $irq:ident) => {
@@ -124,7 +123,7 @@ impl<'d, T: Instance> Timer<'d, T> {
         this.stop();
 
         if is_counter {
-            regs.mode.write(|w| w.mode().counter());
+            regs.mode.write(|w| w.mode().low_power_counter());
         } else {
             regs.mode.write(|w| w.mode().timer());
         }
@@ -169,21 +168,21 @@ impl<'d, T: Instance> Timer<'d, T> {
     /// Returns the START task, for use with PPI.
     ///
     /// When triggered, this task starts the timer.
-    pub fn task_start(&self) -> Task {
+    pub fn task_start(&self) -> Task<'d> {
         Task::from_reg(&T::regs().tasks_start)
     }
 
     /// Returns the STOP task, for use with PPI.
     ///
     /// When triggered, this task stops the timer.
-    pub fn task_stop(&self) -> Task {
+    pub fn task_stop(&self) -> Task<'d> {
         Task::from_reg(&T::regs().tasks_stop)
     }
 
     /// Returns the CLEAR task, for use with PPI.
     ///
     /// When triggered, this task resets the timer's counter to 0.
-    pub fn task_clear(&self) -> Task {
+    pub fn task_clear(&self) -> Task<'d> {
         Task::from_reg(&T::regs().tasks_clear)
     }
 
@@ -191,7 +190,7 @@ impl<'d, T: Instance> Timer<'d, T> {
     ///
     /// When triggered, this task increments the timer's counter by 1.
     /// Only works in counter mode.
-    pub fn task_count(&self) -> Task {
+    pub fn task_count(&self) -> Task<'d> {
         Task::from_reg(&T::regs().tasks_count)
     }
 
@@ -259,14 +258,14 @@ impl<'d, T: Instance> Cc<'d, T> {
     /// Returns this CC register's CAPTURE task, for use with PPI.
     ///
     /// When triggered, this task will capture the current value of the timer's counter in this register.
-    pub fn task_capture(&self) -> Task {
+    pub fn task_capture(&self) -> Task<'d> {
         Task::from_reg(&T::regs().tasks_capture)
     }
 
     /// Returns this CC register's COMPARE event, for use with PPI.
     ///
     /// This event will fire when the timer's counter reaches the value in this CC register.
-    pub fn event_compare(&self) -> Event {
+    pub fn event_compare(&self) -> Event<'d> {
         Event::from_reg(&T::regs().events_compare[self.n])
     }
 

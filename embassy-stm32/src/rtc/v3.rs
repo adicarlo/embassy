@@ -1,98 +1,33 @@
 use stm32_metapac::rtc::vals::{Calp, Calw16, Calw8, Fmt, Init, Key, Osel, Pol, TampalrmPu, TampalrmType};
 
-use super::{Instance, RtcCalibrationCyclePeriod, RtcConfig};
+use super::{sealed, RtcCalibrationCyclePeriod};
 use crate::pac::rtc::Rtc;
+use crate::peripherals::RTC;
+use crate::rtc::sealed::Instance;
 
-impl<'d, T: Instance> super::Rtc<'d, T> {
+impl super::Rtc {
     /// Applies the RTC config
     /// It this changes the RTC clock source the time will be reset
-    pub(super) fn apply_config(&mut self, rtc_config: RtcConfig) {
-        // Unlock the backup domain
-        unsafe {
-            #[cfg(feature = "stm32g0c1ve")]
-            {
-                crate::pac::PWR.cr1().modify(|w| w.set_dbp(true));
-                while !crate::pac::PWR.cr1().read().dbp() {}
-            }
-
-            #[cfg(not(any(
-                feature = "stm32g0c1ve",
-                feature = "stm32g491re",
-                feature = "stm32u585zi",
-                feature = "stm32g473cc"
-            )))]
-            {
-                crate::pac::PWR
-                    .cr1()
-                    .modify(|w| w.set_dbp(stm32_metapac::pwr::vals::Dbp::ENABLED));
-                while crate::pac::PWR.cr1().read().dbp() != stm32_metapac::pwr::vals::Dbp::DISABLED {}
-            }
-
-            let reg = crate::pac::RCC.bdcr().read();
-            assert!(!reg.lsecsson(), "RTC is not compatible with LSE CSS, yet.");
-
-            let config_rtcsel = rtc_config.clock_config as u8;
-            #[cfg(not(any(
-                feature = "stm32wl54jc-cm0p",
-                feature = "stm32wle5ub",
-                feature = "stm32g0c1ve",
-                feature = "stm32wl55jc-cm4",
-                feature = "stm32wl55uc-cm4",
-                feature = "stm32g491re",
-                feature = "stm32g473cc",
-                feature = "stm32u585zi",
-                feature = "stm32wle5jb"
-            )))]
-            let config_rtcsel = stm32_metapac::rtc::vals::Rtcsel(config_rtcsel);
-            #[cfg(feature = "stm32g0c1ve")]
-            let config_rtcsel = stm32_metapac::rcc::vals::Rtcsel(config_rtcsel);
-
-            if !reg.rtcen() || reg.rtcsel() != config_rtcsel {
-                crate::pac::RCC.bdcr().modify(|w| w.set_bdrst(true));
-
-                crate::pac::RCC.bdcr().modify(|w| {
-                    // Reset
-                    w.set_bdrst(false);
-
-                    // Select RTC source
-                    w.set_rtcsel(config_rtcsel);
-
-                    w.set_rtcen(true);
-
-                    // Restore bcdr
-                    w.set_lscosel(reg.lscosel());
-                    w.set_lscoen(reg.lscoen());
-
-                    w.set_lseon(reg.lseon());
-                    w.set_lsedrv(reg.lsedrv());
-                    w.set_lsebyp(reg.lsebyp());
-                });
-            }
-        }
-
+    pub(super) fn configure(&mut self, async_psc: u8, sync_psc: u16) {
         self.write(true, |rtc| {
-            unsafe {
-                rtc.cr().modify(|w| {
-                    w.set_fmt(Fmt::TWENTYFOURHOUR);
-                    w.set_osel(Osel::DISABLED);
-                    w.set_pol(Pol::HIGH);
-                });
+            rtc.cr().modify(|w| {
+                w.set_fmt(Fmt::TWENTYFOURHOUR);
+                w.set_osel(Osel::DISABLED);
+                w.set_pol(Pol::HIGH);
+            });
 
-                rtc.prer().modify(|w| {
-                    w.set_prediv_s(rtc_config.sync_prescaler);
-                    w.set_prediv_a(rtc_config.async_prescaler);
-                });
+            rtc.prer().modify(|w| {
+                w.set_prediv_s(sync_psc);
+                w.set_prediv_a(async_psc);
+            });
 
-                // TODO: configuration for output pins
-                rtc.cr().modify(|w| {
-                    w.set_out2en(false);
-                    w.set_tampalrm_type(TampalrmType::PUSHPULL);
-                    w.set_tampalrm_pu(TampalrmPu::NOPULLUP);
-                });
-            }
+            // TODO: configuration for output pins
+            rtc.cr().modify(|w| {
+                w.set_out2en(false);
+                w.set_tampalrm_type(TampalrmType::PUSHPULL);
+                w.set_tampalrm_pu(TampalrmPu::NOPULLUP);
+            });
         });
-
-        self.rtc_config = rtc_config;
     }
 
     const RTC_CALR_MIN_PPM: f32 = -487.1;
@@ -117,47 +52,45 @@ impl<'d, T: Instance> super::Rtc<'d, T> {
         clock_drift = clock_drift / Self::RTC_CALR_RESOLUTION_PPM;
 
         self.write(false, |rtc| {
-            unsafe {
-                rtc.calr().write(|w| {
-                    match period {
-                        RtcCalibrationCyclePeriod::Seconds8 => {
-                            w.set_calw8(Calw8::EIGHTSECONDS);
-                        }
-                        RtcCalibrationCyclePeriod::Seconds16 => {
-                            w.set_calw16(Calw16::SIXTEENSECONDS);
-                        }
-                        RtcCalibrationCyclePeriod::Seconds32 => {
-                            // Set neither `calw8` nor `calw16` to use 32 seconds
-                        }
+            rtc.calr().write(|w| {
+                match period {
+                    RtcCalibrationCyclePeriod::Seconds8 => {
+                        w.set_calw8(Calw8::EIGHTSECONDS);
                     }
-
-                    // Extra pulses during calibration cycle period: CALP * 512 - CALM
-                    //
-                    // CALP sets whether pulses are added or omitted.
-                    //
-                    // CALM contains how many pulses (out of 512) are masked in a
-                    // given calibration cycle period.
-                    if clock_drift > 0.0 {
-                        // Maximum (about 512.2) rounds to 512.
-                        clock_drift += 0.5;
-
-                        // When the offset is positive (0 to 512), the opposite of
-                        // the offset (512 - offset) is masked, i.e. for the
-                        // maximum offset (512), 0 pulses are masked.
-                        w.set_calp(Calp::INCREASEFREQ);
-                        w.set_calm(512 - clock_drift as u16);
-                    } else {
-                        // Minimum (about -510.7) rounds to -511.
-                        clock_drift -= 0.5;
-
-                        // When the offset is negative or zero (-511 to 0),
-                        // the absolute offset is masked, i.e. for the minimum
-                        // offset (-511), 511 pulses are masked.
-                        w.set_calp(Calp::NOCHANGE);
-                        w.set_calm((clock_drift * -1.0) as u16);
+                    RtcCalibrationCyclePeriod::Seconds16 => {
+                        w.set_calw16(Calw16::SIXTEENSECONDS);
                     }
-                });
-            }
+                    RtcCalibrationCyclePeriod::Seconds32 => {
+                        // Set neither `calw8` nor `calw16` to use 32 seconds
+                    }
+                }
+
+                // Extra pulses during calibration cycle period: CALP * 512 - CALM
+                //
+                // CALP sets whether pulses are added or omitted.
+                //
+                // CALM contains how many pulses (out of 512) are masked in a
+                // given calibration cycle period.
+                if clock_drift > 0.0 {
+                    // Maximum (about 512.2) rounds to 512.
+                    clock_drift += 0.5;
+
+                    // When the offset is positive (0 to 512), the opposite of
+                    // the offset (512 - offset) is masked, i.e. for the
+                    // maximum offset (512), 0 pulses are masked.
+                    w.set_calp(Calp::INCREASEFREQ);
+                    w.set_calm(512 - clock_drift as u16);
+                } else {
+                    // Minimum (about -510.7) rounds to -511.
+                    clock_drift -= 0.5;
+
+                    // When the offset is negative or zero (-511 to 0),
+                    // the absolute offset is masked, i.e. for the minimum
+                    // offset (-511), 511 pulses are masked.
+                    w.set_calp(Calp::NOCHANGE);
+                    w.set_calm((clock_drift * -1.0) as u16);
+                }
+            });
         })
     }
 
@@ -165,62 +98,50 @@ impl<'d, T: Instance> super::Rtc<'d, T> {
     where
         F: FnOnce(&crate::pac::rtc::Rtc) -> R,
     {
-        let r = T::regs();
+        let r = RTC::regs();
         // Disable write protection.
         // This is safe, as we're only writin the correct and expected values.
-        unsafe {
-            r.wpr().write(|w| w.set_key(Key::DEACTIVATE1));
-            r.wpr().write(|w| w.set_key(Key::DEACTIVATE2));
+        r.wpr().write(|w| w.set_key(Key::DEACTIVATE1));
+        r.wpr().write(|w| w.set_key(Key::DEACTIVATE2));
 
-            if init_mode && !r.icsr().read().initf() {
-                r.icsr().modify(|w| w.set_init(Init::INITMODE));
-                // wait till init state entered
-                // ~2 RTCCLK cycles
-                while !r.icsr().read().initf() {}
-            }
+        if init_mode && !r.icsr().read().initf() {
+            r.icsr().modify(|w| w.set_init(Init::INITMODE));
+            // wait till init state entered
+            // ~2 RTCCLK cycles
+            while !r.icsr().read().initf() {}
         }
 
         let result = f(&r);
 
-        unsafe {
-            if init_mode {
-                r.icsr().modify(|w| w.set_init(Init::FREERUNNINGMODE)); // Exits init mode
-            }
-
-            // Re-enable write protection.
-            // This is safe, as the field accepts the full range of 8-bit values.
-            r.wpr().write(|w| w.set_key(Key::ACTIVATE));
+        if init_mode {
+            r.icsr().modify(|w| w.set_init(Init::FREERUNNINGMODE)); // Exits init mode
         }
+
+        // Re-enable write protection.
+        // This is safe, as the field accepts the full range of 8-bit values.
+        r.wpr().write(|w| w.set_key(Key::ACTIVATE));
+
         result
     }
 }
 
-pub(super) unsafe fn enable_peripheral_clk() {
-    // Nothing to do
-}
+impl sealed::Instance for crate::peripherals::RTC {
+    const BACKUP_REGISTER_COUNT: usize = 32;
 
-pub const BACKUP_REGISTER_COUNT: usize = 32;
-
-/// Read content of the backup register.
-///
-/// The registers retain their values during wakes from standby mode or system resets. They also
-/// retain their value when Vdd is switched off as long as V_BAT is powered.
-pub fn read_backup_register(_rtc: &Rtc, register: usize) -> Option<u32> {
-    if register < BACKUP_REGISTER_COUNT {
-        //Some(rtc.bkpr()[register].read().bits())
-        None // RTC3 backup registers come from the TAMP peripe=heral, not RTC. Not() even in the L412 PAC
-    } else {
-        None
+    fn read_backup_register(_rtc: &Rtc, register: usize) -> Option<u32> {
+        #[allow(clippy::if_same_then_else)]
+        if register < Self::BACKUP_REGISTER_COUNT {
+            //Some(rtc.bkpr()[register].read().bits())
+            None // RTC3 backup registers come from the TAMP peripe=heral, not RTC. Not() even in the L412 PAC
+        } else {
+            None
+        }
     }
-}
 
-/// Set content of the backup register.
-///
-/// The registers retain their values during wakes from standby mode or system resets. They also
-/// retain their value when Vdd is switched off as long as V_BAT is powered.
-pub fn write_backup_register(_rtc: &Rtc, register: usize, _value: u32) {
-    if register < BACKUP_REGISTER_COUNT {
-        // RTC3 backup registers come from the TAMP peripe=heral, not RTC. Not() even in the L412 PAC
-        //unsafe { self.rtc.bkpr()[register].write(|w| w.bits(value)) }
+    fn write_backup_register(_rtc: &Rtc, register: usize, _value: u32) {
+        if register < Self::BACKUP_REGISTER_COUNT {
+            // RTC3 backup registers come from the TAMP peripe=heral, not RTC. Not() even in the L412 PAC
+            //self.rtc.bkpr()[register].write(|w| w.bits(value))
+        }
     }
 }

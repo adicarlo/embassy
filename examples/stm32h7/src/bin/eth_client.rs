@@ -11,22 +11,18 @@ use embassy_stm32::eth::{Ethernet, PacketQueue};
 use embassy_stm32::peripherals::ETH;
 use embassy_stm32::rng::Rng;
 use embassy_stm32::time::mhz;
-use embassy_stm32::{interrupt, Config};
+use embassy_stm32::{bind_interrupts, eth, peripherals, rng, Config};
 use embassy_time::{Duration, Timer};
-use embedded_io::asynch::Write;
+use embedded_io_async::Write;
 use embedded_nal_async::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpConnect};
 use rand_core::RngCore;
-use static_cell::StaticCell;
+use static_cell::make_static;
 use {defmt_rtt as _, panic_probe as _};
 
-macro_rules! singleton {
-    ($val:expr) => {{
-        type T = impl Sized;
-        static STATIC_CELL: StaticCell<T> = StaticCell::new();
-        let (x,) = STATIC_CELL.init(($val,));
-        x
-    }};
-}
+bind_interrupts!(struct Irqs {
+    ETH => eth::InterruptHandler;
+    RNG => rng::InterruptHandler<peripherals::RNG>;
+});
 
 type Device = Ethernet<'static, ETH, GenericSMI>;
 
@@ -45,18 +41,17 @@ async fn main(spawner: Spawner) -> ! {
     info!("Hello World!");
 
     // Generate random seed.
-    let mut rng = Rng::new(p.RNG);
+    let mut rng = Rng::new(p.RNG, Irqs);
     let mut seed = [0; 8];
     rng.fill_bytes(&mut seed);
     let seed = u64::from_le_bytes(seed);
 
-    let eth_int = interrupt::take!(ETH);
     let mac_addr = [0x00, 0x00, 0xDE, 0xAD, 0xBE, 0xEF];
 
     let device = Ethernet::new(
-        singleton!(PacketQueue::<16, 16>::new()),
+        make_static!(PacketQueue::<16, 16>::new()),
         p.ETH,
-        eth_int,
+        Irqs,
         p.PA1,
         p.PA2,
         p.PC1,
@@ -66,20 +61,25 @@ async fn main(spawner: Spawner) -> ! {
         p.PG13,
         p.PB13,
         p.PG11,
-        GenericSMI,
+        GenericSMI::new(),
         mac_addr,
         0,
     );
 
-    let config = embassy_net::Config::Dhcp(Default::default());
-    //let config = embassy_net::Config::StaticConfig(embassy_net::Config {
+    let config = embassy_net::Config::dhcpv4(Default::default());
+    //let config = embassy_net::Config::ipv4_static(embassy_net::StaticConfigV4 {
     //    address: Ipv4Cidr::new(Ipv4Address::new(10, 42, 0, 61), 24),
     //    dns_servers: Vec::new(),
     //    gateway: Some(Ipv4Address::new(10, 42, 0, 1)),
     //});
 
     // Init network stack
-    let stack = &*singleton!(Stack::new(device, config, singleton!(StackResources::<2>::new()), seed));
+    let stack = &*make_static!(Stack::new(
+        device,
+        config,
+        make_static!(StackResources::<2>::new()),
+        seed
+    ));
 
     // Launch network task
     unwrap!(spawner.spawn(net_task(&stack)));

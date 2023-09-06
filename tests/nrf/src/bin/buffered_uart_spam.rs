@@ -1,6 +1,7 @@
 #![no_std]
 #![no_main]
 #![feature(type_alias_impl_trait)]
+teleprobe_meta::target!(b"nrf52840-dk");
 
 use core::mem;
 use core::ptr::NonNull;

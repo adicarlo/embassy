@@ -11,8 +11,8 @@
 //! - On Pixel 4a, it refused to work on Android 11, worked on Android 12.
 //! - if the host's MAC address has the "locally-administered" bit set (bit 1 of first byte),
 //!   it doesn't work! The "Ethernet tethering" option in settings doesn't get enabled.
-//!   This is due to regex spaghetti: https://android.googlesource.com/platform/frameworks/base/+/refs/tags/android-mainline-12.0.0_r84/core/res/res/values/config.xml#417
-//!   and this nonsense in the linux kernel: https://github.com/torvalds/linux/blob/c00c5e1d157bec0ef0b0b59aa5482eb8dc7e8e49/drivers/net/usb/usbnet.c#L1751-L1757
+//!   This is due to regex spaghetti: <https://android.googlesource.com/platform/frameworks/base/+/refs/tags/android-mainline-12.0.0_r84/core/res/res/values/config.xml#417>
+//!   and this nonsense in the linux kernel: <https://github.com/torvalds/linux/blob/c00c5e1d157bec0ef0b0b59aa5482eb8dc7e8e49/drivers/net/usb/usbnet.c#L1751-L1757>
 
 use core::intrinsics::copy_nonoverlapping;
 use core::mem::{size_of, MaybeUninit};
@@ -248,6 +248,8 @@ pub struct CdcNcmClass<'d, D: Driver<'d>> {
     write_ep: D::EndpointIn,
 
     _control: &'d ControlShared,
+
+    max_packet_size: usize,
 }
 
 impl<'d, D: Driver<'d>> CdcNcmClass<'d, D> {
@@ -338,6 +340,7 @@ impl<'d, D: Driver<'d>> CdcNcmClass<'d, D> {
             read_ep,
             write_ep,
             _control: &state.shared,
+            max_packet_size: max_packet_size as usize,
         }
     }
 
@@ -349,6 +352,7 @@ impl<'d, D: Driver<'d>> CdcNcmClass<'d, D> {
             Sender {
                 write_ep: self.write_ep,
                 seq: 0,
+                max_packet_size: self.max_packet_size,
             },
             Receiver {
                 data_if: self.data_if,
@@ -365,18 +369,19 @@ impl<'d, D: Driver<'d>> CdcNcmClass<'d, D> {
 pub struct Sender<'d, D: Driver<'d>> {
     write_ep: D::EndpointIn,
     seq: u16,
+    max_packet_size: usize,
 }
 
 impl<'d, D: Driver<'d>> Sender<'d, D> {
     /// Write a packet.
     ///
-    /// This waits until the packet is succesfully stored in the CDC-NCM endpoint buffers.
+    /// This waits until the packet is successfully stored in the CDC-NCM endpoint buffers.
     pub async fn write_packet(&mut self, data: &[u8]) -> Result<(), EndpointError> {
         let seq = self.seq;
         self.seq = self.seq.wrapping_add(1);
 
-        const MAX_PACKET_SIZE: usize = 64; // TODO unhardcode
         const OUT_HEADER_LEN: usize = 28;
+        const ABS_MAX_PACKET_SIZE: usize = 512;
 
         let header = NtbOutHeader {
             nth_sig: SIG_NTH,
@@ -395,27 +400,27 @@ impl<'d, D: Driver<'d>> Sender<'d, D> {
         };
 
         // Build first packet on a buffer, send next packets straight from `data`.
-        let mut buf = [0; MAX_PACKET_SIZE];
+        let mut buf = [0; ABS_MAX_PACKET_SIZE];
         let n = byteify(&mut buf, header);
         assert_eq!(n.len(), OUT_HEADER_LEN);
 
-        if OUT_HEADER_LEN + data.len() < MAX_PACKET_SIZE {
+        if OUT_HEADER_LEN + data.len() < self.max_packet_size {
             // First packet is not full, just send it.
             // No need to send ZLP because it's short for sure.
             buf[OUT_HEADER_LEN..][..data.len()].copy_from_slice(data);
             self.write_ep.write(&buf[..OUT_HEADER_LEN + data.len()]).await?;
         } else {
-            let (d1, d2) = data.split_at(MAX_PACKET_SIZE - OUT_HEADER_LEN);
+            let (d1, d2) = data.split_at(self.max_packet_size - OUT_HEADER_LEN);
 
-            buf[OUT_HEADER_LEN..].copy_from_slice(d1);
-            self.write_ep.write(&buf).await?;
+            buf[OUT_HEADER_LEN..self.max_packet_size].copy_from_slice(d1);
+            self.write_ep.write(&buf[..self.max_packet_size]).await?;
 
-            for chunk in d2.chunks(MAX_PACKET_SIZE) {
+            for chunk in d2.chunks(self.max_packet_size) {
                 self.write_ep.write(&chunk).await?;
             }
 
             // Send ZLP if needed.
-            if d2.len() % MAX_PACKET_SIZE == 0 {
+            if d2.len() % self.max_packet_size == 0 {
                 self.write_ep.write(&[]).await?;
             }
         }
@@ -436,7 +441,7 @@ pub struct Receiver<'d, D: Driver<'d>> {
 impl<'d, D: Driver<'d>> Receiver<'d, D> {
     /// Write a network packet.
     ///
-    /// This waits until a packet is succesfully received from the endpoint buffers.
+    /// This waits until a packet is successfully received from the endpoint buffers.
     pub async fn read_packet(&mut self, buf: &mut [u8]) -> Result<usize, EndpointError> {
         // Retry loop
         loop {

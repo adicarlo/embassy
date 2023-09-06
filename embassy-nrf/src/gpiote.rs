@@ -4,12 +4,12 @@ use core::convert::Infallible;
 use core::future::{poll_fn, Future};
 use core::task::{Context, Poll};
 
-use embassy_hal_common::{impl_peripheral, into_ref, Peripheral, PeripheralRef};
+use embassy_hal_internal::{impl_peripheral, into_ref, Peripheral, PeripheralRef};
 use embassy_sync::waitqueue::AtomicWaker;
 
 use crate::gpio::sealed::Pin as _;
 use crate::gpio::{AnyPin, Flex, Input, Output, Pin as GpioPin};
-use crate::interrupt::{Interrupt, InterruptExt};
+use crate::interrupt::InterruptExt;
 use crate::ppi::{Event, Task};
 use crate::{interrupt, pac, peripherals};
 
@@ -74,42 +74,41 @@ pub(crate) fn init(irq_prio: crate::interrupt::Priority) {
     }
 
     // Enable interrupts
-    cfg_if::cfg_if! {
-        if #[cfg(any(feature="nrf5340-app-s", feature="nrf9160-s"))] {
-            let irq = unsafe { interrupt::GPIOTE0::steal() };
-        } else if #[cfg(any(feature="nrf5340-app-ns", feature="nrf9160-ns"))] {
-            let irq = unsafe { interrupt::GPIOTE1::steal() };
-        } else {
-            let irq = unsafe { interrupt::GPIOTE::steal() };
-        }
-    }
+    #[cfg(any(feature = "nrf5340-app-s", feature = "nrf9160-s"))]
+    let irq = interrupt::GPIOTE0;
+    #[cfg(any(feature = "nrf5340-app-ns", feature = "nrf9160-ns"))]
+    let irq = interrupt::GPIOTE1;
+    #[cfg(any(feature = "_nrf52", feature = "nrf5340-net"))]
+    let irq = interrupt::GPIOTE;
 
     irq.unpend();
     irq.set_priority(irq_prio);
-    irq.enable();
+    unsafe { irq.enable() };
 
     let g = regs();
     g.events_port.write(|w| w);
     g.intenset.write(|w| w.port().set());
 }
 
-cfg_if::cfg_if! {
-    if #[cfg(any(feature="nrf5340-app-s", feature="nrf9160-s"))] {
-        #[interrupt]
-        fn GPIOTE0() {
-            unsafe { handle_gpiote_interrupt() };
-        }
-    } else if #[cfg(any(feature="nrf5340-app-ns", feature="nrf9160-ns"))] {
-        #[interrupt]
-        fn GPIOTE1() {
-            unsafe { handle_gpiote_interrupt() };
-        }
-    } else {
-        #[interrupt]
-        fn GPIOTE() {
-            unsafe { handle_gpiote_interrupt() };
-        }
-    }
+#[cfg(any(feature = "nrf5340-app-s", feature = "nrf9160-s"))]
+#[cfg(feature = "rt")]
+#[interrupt]
+fn GPIOTE0() {
+    unsafe { handle_gpiote_interrupt() };
+}
+
+#[cfg(any(feature = "nrf5340-app-ns", feature = "nrf9160-ns"))]
+#[cfg(feature = "rt")]
+#[interrupt]
+fn GPIOTE1() {
+    unsafe { handle_gpiote_interrupt() };
+}
+
+#[cfg(any(feature = "_nrf52", feature = "nrf5340-net"))]
+#[cfg(feature = "rt")]
+#[interrupt]
+fn GPIOTE() {
+    unsafe { handle_gpiote_interrupt() };
 }
 
 unsafe fn handle_gpiote_interrupt() {
@@ -222,7 +221,7 @@ impl<'d, C: Channel, T: GpioPin> InputChannel<'d, C, T> {
     }
 
     /// Returns the IN event, for use with PPI.
-    pub fn event_in(&self) -> Event {
+    pub fn event_in(&self) -> Event<'d> {
         let g = regs();
         Event::from_reg(&g.events_in[self.ch.number()])
     }
@@ -293,21 +292,21 @@ impl<'d, C: Channel, T: GpioPin> OutputChannel<'d, C, T> {
     }
 
     /// Returns the OUT task, for use with PPI.
-    pub fn task_out(&self) -> Task {
+    pub fn task_out(&self) -> Task<'d> {
         let g = regs();
         Task::from_reg(&g.tasks_out[self.ch.number()])
     }
 
     /// Returns the CLR task, for use with PPI.
     #[cfg(not(feature = "nrf51"))]
-    pub fn task_clr(&self) -> Task {
+    pub fn task_clr(&self) -> Task<'d> {
         let g = regs();
         Task::from_reg(&g.tasks_clr[self.ch.number()])
     }
 
     /// Returns the SET task, for use with PPI.
     #[cfg(not(feature = "nrf51"))]
-    pub fn task_set(&self) -> Task {
+    pub fn task_set(&self) -> Task<'d> {
         let g = regs();
         Task::from_reg(&g.tasks_set[self.ch.number()])
     }

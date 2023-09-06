@@ -16,7 +16,7 @@ const QUEUE_SIZE: usize = 16;
 #[cfg(feature = "generic-queue-32")]
 const QUEUE_SIZE: usize = 32;
 #[cfg(feature = "generic-queue-64")]
-const QUEUE_SIZE: usize = 32;
+const QUEUE_SIZE: usize = 64;
 #[cfg(feature = "generic-queue-128")]
 const QUEUE_SIZE: usize = 128;
 #[cfg(not(any(
@@ -64,7 +64,7 @@ impl InnerQueue {
         self.queue
             .iter_mut()
             .find(|timer| timer.waker.will_wake(waker))
-            .map(|mut timer| {
+            .map(|timer| {
                 timer.at = min(timer.at, at);
             })
             .unwrap_or_else(|| {
@@ -183,7 +183,6 @@ mod tests {
 
     use serial_test::serial;
 
-    use super::InnerQueue;
     use crate::driver::{AlarmHandle, Driver};
     use crate::queue_generic::QUEUE;
     use crate::Instant;
@@ -317,14 +316,18 @@ mod tests {
 
     fn setup() {
         DRIVER.reset();
-
-        QUEUE.inner.lock(|inner| {
-            *inner.borrow_mut() = InnerQueue::new();
-        });
+        critical_section::with(|cs| *QUEUE.inner.borrow_ref_mut(cs) = None);
     }
 
     fn queue_len() -> usize {
-        QUEUE.inner.lock(|inner| inner.borrow().queue.iter().count())
+        critical_section::with(|cs| {
+            QUEUE
+                .inner
+                .borrow_ref(cs)
+                .as_ref()
+                .map(|inner| inner.queue.iter().count())
+                .unwrap_or(0)
+        })
     }
 
     #[test]
