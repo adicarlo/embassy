@@ -16,6 +16,7 @@ use crate::interrupt::Priority;
 use crate::pac;
 use crate::pac::gpdma::vals;
 
+/// GPDMA transfer options.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[non_exhaustive]
@@ -53,10 +54,10 @@ impl State {
 static STATE: State = State::new();
 
 /// safety: must be called only once
-pub(crate) unsafe fn init(irq_priority: Priority) {
+pub(crate) unsafe fn init(cs: critical_section::CriticalSection, irq_priority: Priority) {
     foreach_interrupt! {
         ($peri:ident, gpdma, $block:ident, $signal_name:ident, $irq:ident) => {
-            crate::interrupt::typelevel::$irq::set_priority(irq_priority);
+            crate::interrupt::typelevel::$irq::set_priority_with_cs(cs, irq_priority);
             crate::interrupt::typelevel::$irq::enable();
         };
     }
@@ -113,10 +114,13 @@ pub(crate) unsafe fn on_irq_inner(dma: pac::gpdma::Gpdma, channel_num: usize, in
     }
 }
 
+/// DMA request type alias. (also known as DMA channel number in some chips)
 pub type Request = u8;
 
+/// DMA channel.
 #[cfg(dmamux)]
 pub trait Channel: sealed::Channel + Peripheral<P = Self> + 'static + super::dmamux::MuxChannel {}
+/// DMA channel.
 #[cfg(not(dmamux))]
 pub trait Channel: sealed::Channel + Peripheral<P = Self> + 'static {}
 
@@ -131,12 +135,14 @@ pub(crate) mod sealed {
     }
 }
 
+/// DMA transfer.
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct Transfer<'a, C: Channel> {
     channel: PeripheralRef<'a, C>,
 }
 
 impl<'a, C: Channel> Transfer<'a, C> {
+    /// Create a new read DMA transfer (peripheral to memory).
     pub unsafe fn new_read<W: Word>(
         channel: impl Peripheral<P = C> + 'a,
         request: Request,
@@ -147,6 +153,7 @@ impl<'a, C: Channel> Transfer<'a, C> {
         Self::new_read_raw(channel, request, peri_addr, buf, options)
     }
 
+    /// Create a new read DMA transfer (peripheral to memory), using raw pointers.
     pub unsafe fn new_read_raw<W: Word>(
         channel: impl Peripheral<P = C> + 'a,
         request: Request,
@@ -172,6 +179,7 @@ impl<'a, C: Channel> Transfer<'a, C> {
         )
     }
 
+    /// Create a new write DMA transfer (memory to peripheral).
     pub unsafe fn new_write<W: Word>(
         channel: impl Peripheral<P = C> + 'a,
         request: Request,
@@ -182,6 +190,7 @@ impl<'a, C: Channel> Transfer<'a, C> {
         Self::new_write_raw(channel, request, buf, peri_addr, options)
     }
 
+    /// Create a new write DMA transfer (memory to peripheral), using raw pointers.
     pub unsafe fn new_write_raw<W: Word>(
         channel: impl Peripheral<P = C> + 'a,
         request: Request,
@@ -207,6 +216,7 @@ impl<'a, C: Channel> Transfer<'a, C> {
         )
     }
 
+    /// Create a new write DMA transfer (memory to peripheral), writing the same value repeatedly.
     pub unsafe fn new_write_repeated<W: Word>(
         channel: impl Peripheral<P = C> + 'a,
         request: Request,
@@ -297,21 +307,24 @@ impl<'a, C: Channel> Transfer<'a, C> {
         this
     }
 
+    /// Request the transfer to stop.
+    ///
+    /// This doesn't immediately stop the transfer, you have to wait until [`is_running`](Self::is_running) returns false.
     pub fn request_stop(&mut self) {
         let ch = self.channel.regs().ch(self.channel.num());
-
-        // Disable the channel. Keep the IEs enabled so the irqs still fire.
-        ch.cr().write(|w| {
-            w.set_tcie(true);
-            w.set_useie(true);
-            w.set_dteie(true);
-            w.set_suspie(true);
+        ch.cr().modify(|w| {
+            w.set_susp(true);
         })
     }
 
+    /// Return whether this transfer is still running.
+    ///
+    /// If this returns `false`, it can be because either the transfer finished, or
+    /// it was requested to stop early with [`request_stop`](Self::request_stop).
     pub fn is_running(&mut self) -> bool {
         let ch = self.channel.regs().ch(self.channel.num());
-        !ch.sr().read().tcf()
+        let sr = ch.sr().read();
+        !sr.tcf() && !sr.suspf()
     }
 
     /// Gets the total remaining transfers for the channel
@@ -321,6 +334,7 @@ impl<'a, C: Channel> Transfer<'a, C> {
         ch.br1().read().bndt()
     }
 
+    /// Blocking wait until the transfer finishes.
     pub fn blocking_wait(mut self) {
         while self.is_running() {}
 

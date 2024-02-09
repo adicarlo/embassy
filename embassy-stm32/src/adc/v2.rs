@@ -1,7 +1,6 @@
 use embassy_hal_internal::into_ref;
 use embedded_hal_02::blocking::delay::DelayUs;
 
-use super::InternalChannel;
 use crate::adc::{Adc, AdcPin, Instance, Resolution, SampleTime};
 use crate::peripherals::ADC1;
 use crate::time::Hertz;
@@ -16,8 +15,8 @@ pub const VREF_CALIB_MV: u32 = 3300;
 pub const ADC_POWERUP_TIME_US: u32 = 3;
 
 pub struct VrefInt;
-impl InternalChannel<ADC1> for VrefInt {}
-impl super::sealed::InternalChannel<ADC1> for VrefInt {
+impl AdcPin<ADC1> for VrefInt {}
+impl super::sealed::AdcPin<ADC1> for VrefInt {
     fn channel(&self) -> u8 {
         17
     }
@@ -31,11 +30,11 @@ impl VrefInt {
 }
 
 pub struct Temperature;
-impl InternalChannel<ADC1> for Temperature {}
-impl super::sealed::InternalChannel<ADC1> for Temperature {
+impl AdcPin<ADC1> for Temperature {}
+impl super::sealed::AdcPin<ADC1> for Temperature {
     fn channel(&self) -> u8 {
         cfg_if::cfg_if! {
-            if #[cfg(any(stm32f40, stm32f41))] {
+            if #[cfg(any(stm32f2, stm32f40, stm32f41))] {
                 16
             } else {
                 18
@@ -52,8 +51,8 @@ impl Temperature {
 }
 
 pub struct Vbat;
-impl InternalChannel<ADC1> for Vbat {}
-impl super::sealed::InternalChannel<ADC1> for Vbat {
+impl AdcPin<ADC1> for Vbat {}
+impl super::sealed::AdcPin<ADC1> for Vbat {
     fn channel(&self) -> u8 {
         18
     }
@@ -68,7 +67,11 @@ enum Prescaler {
 
 impl Prescaler {
     fn from_pclk2(freq: Hertz) -> Self {
+        // Datasheet for F2 specifies min frequency 0.6 MHz, and max 30 MHz (with VDDA 2.4-3.6V).
+        #[cfg(stm32f2)]
+        const MAX_FREQUENCY: Hertz = Hertz(30_000_000);
         // Datasheet for both F4 and F7 specifies min frequency 0.6 MHz, typ freq. 30 MHz and max 36 MHz.
+        #[cfg(not(stm32f2))]
         const MAX_FREQUENCY: Hertz = Hertz(36_000_000);
         let raw_div = freq.0 / MAX_FREQUENCY.0;
         match raw_div {
@@ -96,13 +99,12 @@ where
 {
     pub fn new(adc: impl Peripheral<P = T> + 'd, delay: &mut impl DelayUs<u32>) -> Self {
         into_ref!(adc);
-        T::enable();
-        T::reset();
+        T::enable_and_reset();
 
         let presc = Prescaler::from_pclk2(T::frequency());
         T::common_regs().ccr().modify(|w| w.set_adcpre(presc.adcpre()));
         T::regs().cr2().modify(|reg| {
-            reg.set_adon(crate::pac::adc::vals::Adon::ENABLED);
+            reg.set_adon(true);
         });
 
         delay.delay_us(ADC_POWERUP_TIME_US);
@@ -125,7 +127,7 @@ where
     /// [Adc::read_internal()] to perform conversion.
     pub fn enable_vrefint(&self) -> VrefInt {
         T::common_regs().ccr().modify(|reg| {
-            reg.set_tsvrefe(crate::pac::adccommon::vals::Tsvrefe::ENABLED);
+            reg.set_tsvrefe(true);
         });
 
         VrefInt {}
@@ -138,7 +140,7 @@ where
     /// temperature sensor will return vbat value.
     pub fn enable_temperature(&self) -> Temperature {
         T::common_regs().ccr().modify(|reg| {
-            reg.set_tsvrefe(crate::pac::adccommon::vals::Tsvrefe::ENABLED);
+            reg.set_tsvrefe(true);
         });
 
         Temperature {}
@@ -148,7 +150,7 @@ where
     /// [Adc::read_internal()] to perform conversion.
     pub fn enable_vbat(&self) -> Vbat {
         T::common_regs().ccr().modify(|reg| {
-            reg.set_vbate(crate::pac::adccommon::vals::Vbate::ENABLED);
+            reg.set_vbate(true);
         });
 
         Vbat {}
@@ -158,7 +160,7 @@ where
     fn convert(&mut self) -> u16 {
         // clear end of conversion flag
         T::regs().sr().modify(|reg| {
-            reg.set_eoc(crate::pac::adc::vals::Eoc::NOTCOMPLETE);
+            reg.set_eoc(false);
         });
 
         // Start conversion
@@ -166,32 +168,21 @@ where
             reg.set_swstart(true);
         });
 
-        while T::regs().sr().read().strt() == crate::pac::adc::vals::Strt::NOTSTARTED {
+        while T::regs().sr().read().strt() == false {
             // spin //wait for actual start
         }
-        while T::regs().sr().read().eoc() == crate::pac::adc::vals::Eoc::NOTCOMPLETE {
+        while T::regs().sr().read().eoc() == false {
             // spin //wait for finish
         }
 
         T::regs().dr().read().0 as u16
     }
 
-    pub fn read<P>(&mut self, pin: &mut P) -> u16
-    where
-        P: AdcPin<T>,
-        P: crate::gpio::sealed::Pin,
-    {
+    pub fn read(&mut self, pin: &mut impl AdcPin<T>) -> u16 {
         pin.set_as_analog();
 
-        self.read_channel(pin.channel())
-    }
-
-    pub fn read_internal(&mut self, channel: &mut impl InternalChannel<T>) -> u16 {
-        self.read_channel(channel.channel())
-    }
-
-    fn read_channel(&mut self, channel: u8) -> u16 {
         // Configure ADC
+        let channel = pin.channel();
 
         // Select channel
         T::regs().sqr3().write(|reg| reg.set_sq(0, channel));
@@ -199,9 +190,7 @@ where
         // Configure channel
         Self::set_channel_sample_time(channel, self.sample_time);
 
-        let val = self.convert();
-
-        val
+        self.convert()
     }
 
     fn set_channel_sample_time(ch: u8, sample_time: SampleTime) {
@@ -216,6 +205,10 @@ where
 
 impl<'d, T: Instance> Drop for Adc<'d, T> {
     fn drop(&mut self) {
+        T::regs().cr2().modify(|reg| {
+            reg.set_adon(false);
+        });
+
         T::disable();
     }
 }

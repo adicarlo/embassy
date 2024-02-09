@@ -1,3 +1,4 @@
+//! Buffered UART driver.
 use core::future::{poll_fn, Future};
 use core::slice;
 use core::task::Poll;
@@ -5,7 +6,7 @@ use core::task::Poll;
 use atomic_polyfill::{AtomicU8, Ordering};
 use embassy_hal_internal::atomic_ring_buffer::RingBuffer;
 use embassy_sync::waitqueue::AtomicWaker;
-use embassy_time::{Duration, Timer};
+use embassy_time::Timer;
 
 use super::*;
 use crate::clocks::clk_peri_freq;
@@ -38,15 +39,18 @@ impl State {
     }
 }
 
+/// Buffered UART driver.
 pub struct BufferedUart<'d, T: Instance> {
     pub(crate) rx: BufferedUartRx<'d, T>,
     pub(crate) tx: BufferedUartTx<'d, T>,
 }
 
+/// Buffered UART RX handle.
 pub struct BufferedUartRx<'d, T: Instance> {
     pub(crate) phantom: PhantomData<&'d mut T>,
 }
 
+/// Buffered UART TX handle.
 pub struct BufferedUartTx<'d, T: Instance> {
     pub(crate) phantom: PhantomData<&'d mut T>,
 }
@@ -84,6 +88,7 @@ pub(crate) fn init_buffers<'d, T: Instance + 'd>(
 }
 
 impl<'d, T: Instance> BufferedUart<'d, T> {
+    /// Create a buffered UART instance.
     pub fn new(
         _uart: impl Peripheral<P = T> + 'd,
         irq: impl Binding<T::Interrupt, BufferedInterruptHandler<T>>,
@@ -104,6 +109,7 @@ impl<'d, T: Instance> BufferedUart<'d, T> {
         }
     }
 
+    /// Create a buffered UART instance with flow control.
     pub fn new_with_rtscts(
         _uart: impl Peripheral<P = T> + 'd,
         irq: impl Binding<T::Interrupt, BufferedInterruptHandler<T>>,
@@ -132,32 +138,39 @@ impl<'d, T: Instance> BufferedUart<'d, T> {
         }
     }
 
+    /// Write to UART TX buffer blocking execution until done.
     pub fn blocking_write(&mut self, buffer: &[u8]) -> Result<usize, Error> {
         self.tx.blocking_write(buffer)
     }
 
+    /// Flush UART TX blocking execution until done.
     pub fn blocking_flush(&mut self) -> Result<(), Error> {
         self.tx.blocking_flush()
     }
 
+    /// Read from UART RX buffer blocking execution until done.
     pub fn blocking_read(&mut self, buffer: &mut [u8]) -> Result<usize, Error> {
         self.rx.blocking_read(buffer)
     }
 
+    /// Check if UART is busy transmitting.
     pub fn busy(&self) -> bool {
         self.tx.busy()
     }
 
+    /// Wait until TX is empty and send break condition.
     pub async fn send_break(&mut self, bits: u32) {
         self.tx.send_break(bits).await
     }
 
+    /// Split into separate RX and TX handles.
     pub fn split(self) -> (BufferedUartRx<'d, T>, BufferedUartTx<'d, T>) {
         (self.rx, self.tx)
     }
 }
 
 impl<'d, T: Instance> BufferedUartRx<'d, T> {
+    /// Create a new buffered UART RX.
     pub fn new(
         _uart: impl Peripheral<P = T> + 'd,
         irq: impl Binding<T::Interrupt, BufferedInterruptHandler<T>>,
@@ -173,6 +186,7 @@ impl<'d, T: Instance> BufferedUartRx<'d, T> {
         Self { phantom: PhantomData }
     }
 
+    /// Create a new buffered UART RX with flow control.
     pub fn new_with_rts(
         _uart: impl Peripheral<P = T> + 'd,
         irq: impl Binding<T::Interrupt, BufferedInterruptHandler<T>>,
@@ -253,6 +267,7 @@ impl<'d, T: Instance> BufferedUartRx<'d, T> {
         Poll::Ready(result)
     }
 
+    /// Read from UART RX buffer blocking execution until done.
     pub fn blocking_read(&mut self, buf: &mut [u8]) -> Result<usize, Error> {
         loop {
             match Self::try_read(buf) {
@@ -303,6 +318,7 @@ impl<'d, T: Instance> BufferedUartRx<'d, T> {
 }
 
 impl<'d, T: Instance> BufferedUartTx<'d, T> {
+    /// Create a new buffered UART TX.
     pub fn new(
         _uart: impl Peripheral<P = T> + 'd,
         irq: impl Binding<T::Interrupt, BufferedInterruptHandler<T>>,
@@ -318,6 +334,7 @@ impl<'d, T: Instance> BufferedUartTx<'d, T> {
         Self { phantom: PhantomData }
     }
 
+    /// Create a new buffered UART TX with flow control.
     pub fn new_with_cts(
         _uart: impl Peripheral<P = T> + 'd,
         irq: impl Binding<T::Interrupt, BufferedInterruptHandler<T>>,
@@ -373,6 +390,7 @@ impl<'d, T: Instance> BufferedUartTx<'d, T> {
         })
     }
 
+    /// Write to UART TX buffer blocking execution until done.
     pub fn blocking_write(&mut self, buf: &[u8]) -> Result<usize, Error> {
         if buf.is_empty() {
             return Ok(0);
@@ -398,6 +416,7 @@ impl<'d, T: Instance> BufferedUartTx<'d, T> {
         }
     }
 
+    /// Flush UART TX blocking execution until done.
     pub fn blocking_flush(&mut self) -> Result<(), Error> {
         loop {
             let state = T::buffered_state();
@@ -407,6 +426,7 @@ impl<'d, T: Instance> BufferedUartTx<'d, T> {
         }
     }
 
+    /// Check if UART is busy.
     pub fn busy(&self) -> bool {
         T::regs().uartfr().read().busy()
     }
@@ -435,7 +455,7 @@ impl<'d, T: Instance> BufferedUartTx<'d, T> {
         Self::flush().await.unwrap();
         while self.busy() {}
         regs.uartlcr_h().write_set(|w| w.set_brk(true));
-        Timer::after(Duration::from_micros(wait_usecs)).await;
+        Timer::after_micros(wait_usecs).await;
         regs.uartlcr_h().write_clear(|w| w.set_brk(true));
     }
 }
@@ -466,6 +486,7 @@ impl<'d, T: Instance> Drop for BufferedUartTx<'d, T> {
     }
 }
 
+/// Interrupt handler.
 pub struct BufferedInterruptHandler<T: Instance> {
     _uart: PhantomData<T>,
 }
@@ -489,8 +510,6 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for BufferedInterr
             w.set_beic(ris.beris());
             w.set_oeic(ris.oeris());
         });
-
-        trace!("on_interrupt ris={:#X}", ris.0);
 
         // Errors
         if ris.feris() {
@@ -670,126 +689,117 @@ impl<'d, T: Instance + 'd> embedded_io::Write for BufferedUartTx<'d, T> {
     }
 }
 
-mod eh02 {
-    use super::*;
+impl<'d, T: Instance> embedded_hal_02::serial::Read<u8> for BufferedUartRx<'d, T> {
+    type Error = Error;
 
-    impl<'d, T: Instance> embedded_hal_02::serial::Read<u8> for BufferedUartRx<'d, T> {
-        type Error = Error;
-
-        fn read(&mut self) -> Result<u8, nb::Error<Self::Error>> {
-            let r = T::regs();
-            if r.uartfr().read().rxfe() {
-                return Err(nb::Error::WouldBlock);
-            }
-
-            let dr = r.uartdr().read();
-
-            if dr.oe() {
-                Err(nb::Error::Other(Error::Overrun))
-            } else if dr.be() {
-                Err(nb::Error::Other(Error::Break))
-            } else if dr.pe() {
-                Err(nb::Error::Other(Error::Parity))
-            } else if dr.fe() {
-                Err(nb::Error::Other(Error::Framing))
-            } else {
-                Ok(dr.data())
-            }
-        }
-    }
-
-    impl<'d, T: Instance> embedded_hal_02::blocking::serial::Write<u8> for BufferedUartTx<'d, T> {
-        type Error = Error;
-
-        fn bwrite_all(&mut self, mut buffer: &[u8]) -> Result<(), Self::Error> {
-            while !buffer.is_empty() {
-                match self.blocking_write(buffer) {
-                    Ok(0) => panic!("zero-length write."),
-                    Ok(n) => buffer = &buffer[n..],
-                    Err(e) => return Err(e),
-                }
-            }
-            Ok(())
+    fn read(&mut self) -> Result<u8, nb::Error<Self::Error>> {
+        let r = T::regs();
+        if r.uartfr().read().rxfe() {
+            return Err(nb::Error::WouldBlock);
         }
 
-        fn bflush(&mut self) -> Result<(), Self::Error> {
-            self.blocking_flush()
-        }
-    }
+        let dr = r.uartdr().read();
 
-    impl<'d, T: Instance> embedded_hal_02::serial::Read<u8> for BufferedUart<'d, T> {
-        type Error = Error;
-
-        fn read(&mut self) -> Result<u8, nb::Error<Self::Error>> {
-            embedded_hal_02::serial::Read::read(&mut self.rx)
-        }
-    }
-
-    impl<'d, T: Instance> embedded_hal_02::blocking::serial::Write<u8> for BufferedUart<'d, T> {
-        type Error = Error;
-
-        fn bwrite_all(&mut self, mut buffer: &[u8]) -> Result<(), Self::Error> {
-            while !buffer.is_empty() {
-                match self.blocking_write(buffer) {
-                    Ok(0) => panic!("zero-length write."),
-                    Ok(n) => buffer = &buffer[n..],
-                    Err(e) => return Err(e),
-                }
-            }
-            Ok(())
-        }
-
-        fn bflush(&mut self) -> Result<(), Self::Error> {
-            self.blocking_flush()
+        if dr.oe() {
+            Err(nb::Error::Other(Error::Overrun))
+        } else if dr.be() {
+            Err(nb::Error::Other(Error::Break))
+        } else if dr.pe() {
+            Err(nb::Error::Other(Error::Parity))
+        } else if dr.fe() {
+            Err(nb::Error::Other(Error::Framing))
+        } else {
+            Ok(dr.data())
         }
     }
 }
 
-#[cfg(feature = "unstable-traits")]
-mod eh1 {
-    use super::*;
+impl<'d, T: Instance> embedded_hal_02::blocking::serial::Write<u8> for BufferedUartTx<'d, T> {
+    type Error = Error;
 
-    impl<'d, T: Instance> embedded_hal_nb::serial::ErrorType for BufferedUartRx<'d, T> {
-        type Error = Error;
+    fn bwrite_all(&mut self, mut buffer: &[u8]) -> Result<(), Self::Error> {
+        while !buffer.is_empty() {
+            match self.blocking_write(buffer) {
+                Ok(0) => panic!("zero-length write."),
+                Ok(n) => buffer = &buffer[n..],
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
     }
 
-    impl<'d, T: Instance> embedded_hal_nb::serial::ErrorType for BufferedUartTx<'d, T> {
-        type Error = Error;
+    fn bflush(&mut self) -> Result<(), Self::Error> {
+        self.blocking_flush()
+    }
+}
+
+impl<'d, T: Instance> embedded_hal_02::serial::Read<u8> for BufferedUart<'d, T> {
+    type Error = Error;
+
+    fn read(&mut self) -> Result<u8, nb::Error<Self::Error>> {
+        embedded_hal_02::serial::Read::read(&mut self.rx)
+    }
+}
+
+impl<'d, T: Instance> embedded_hal_02::blocking::serial::Write<u8> for BufferedUart<'d, T> {
+    type Error = Error;
+
+    fn bwrite_all(&mut self, mut buffer: &[u8]) -> Result<(), Self::Error> {
+        while !buffer.is_empty() {
+            match self.blocking_write(buffer) {
+                Ok(0) => panic!("zero-length write."),
+                Ok(n) => buffer = &buffer[n..],
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
     }
 
-    impl<'d, T: Instance> embedded_hal_nb::serial::ErrorType for BufferedUart<'d, T> {
-        type Error = Error;
+    fn bflush(&mut self) -> Result<(), Self::Error> {
+        self.blocking_flush()
+    }
+}
+
+impl<'d, T: Instance> embedded_hal_nb::serial::ErrorType for BufferedUartRx<'d, T> {
+    type Error = Error;
+}
+
+impl<'d, T: Instance> embedded_hal_nb::serial::ErrorType for BufferedUartTx<'d, T> {
+    type Error = Error;
+}
+
+impl<'d, T: Instance> embedded_hal_nb::serial::ErrorType for BufferedUart<'d, T> {
+    type Error = Error;
+}
+
+impl<'d, T: Instance> embedded_hal_nb::serial::Read for BufferedUartRx<'d, T> {
+    fn read(&mut self) -> nb::Result<u8, Self::Error> {
+        embedded_hal_02::serial::Read::read(self)
+    }
+}
+
+impl<'d, T: Instance> embedded_hal_nb::serial::Write for BufferedUartTx<'d, T> {
+    fn write(&mut self, char: u8) -> nb::Result<(), Self::Error> {
+        self.blocking_write(&[char]).map(drop).map_err(nb::Error::Other)
     }
 
-    impl<'d, T: Instance> embedded_hal_nb::serial::Read for BufferedUartRx<'d, T> {
-        fn read(&mut self) -> nb::Result<u8, Self::Error> {
-            embedded_hal_02::serial::Read::read(self)
-        }
+    fn flush(&mut self) -> nb::Result<(), Self::Error> {
+        self.blocking_flush().map_err(nb::Error::Other)
+    }
+}
+
+impl<'d, T: Instance> embedded_hal_nb::serial::Read for BufferedUart<'d, T> {
+    fn read(&mut self) -> Result<u8, nb::Error<Self::Error>> {
+        embedded_hal_02::serial::Read::read(&mut self.rx)
+    }
+}
+
+impl<'d, T: Instance> embedded_hal_nb::serial::Write for BufferedUart<'d, T> {
+    fn write(&mut self, char: u8) -> nb::Result<(), Self::Error> {
+        self.blocking_write(&[char]).map(drop).map_err(nb::Error::Other)
     }
 
-    impl<'d, T: Instance> embedded_hal_nb::serial::Write for BufferedUartTx<'d, T> {
-        fn write(&mut self, char: u8) -> nb::Result<(), Self::Error> {
-            self.blocking_write(&[char]).map(drop).map_err(nb::Error::Other)
-        }
-
-        fn flush(&mut self) -> nb::Result<(), Self::Error> {
-            self.blocking_flush().map_err(nb::Error::Other)
-        }
-    }
-
-    impl<'d, T: Instance> embedded_hal_nb::serial::Read for BufferedUart<'d, T> {
-        fn read(&mut self) -> Result<u8, nb::Error<Self::Error>> {
-            embedded_hal_02::serial::Read::read(&mut self.rx)
-        }
-    }
-
-    impl<'d, T: Instance> embedded_hal_nb::serial::Write for BufferedUart<'d, T> {
-        fn write(&mut self, char: u8) -> nb::Result<(), Self::Error> {
-            self.blocking_write(&[char]).map(drop).map_err(nb::Error::Other)
-        }
-
-        fn flush(&mut self) -> nb::Result<(), Self::Error> {
-            self.blocking_flush().map_err(nb::Error::Other)
-        }
+    fn flush(&mut self) -> nb::Result<(), Self::Error> {
+        self.blocking_flush().map_err(nb::Error::Other)
     }
 }

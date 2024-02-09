@@ -1,3 +1,4 @@
+//! Serial Peripheral Interface (SPI)
 #![macro_use]
 
 use core::ptr;
@@ -15,27 +16,38 @@ use crate::rcc::RccPeripheral;
 use crate::time::Hertz;
 use crate::{peripherals, Peripheral};
 
-#[derive(Debug)]
+/// SPI error.
+#[derive(Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Error {
+    /// Invalid framing.
     Framing,
+    /// CRC error (only if hardware CRC checking is enabled).
     Crc,
+    /// Mode fault
     ModeFault,
+    /// Overrun.
     Overrun,
 }
 
-// TODO move upwards in the tree
+/// SPI bit order
 #[derive(Copy, Clone)]
 pub enum BitOrder {
+    /// Least significant bit first.
     LsbFirst,
+    /// Most significant bit first.
     MsbFirst,
 }
 
+/// SPI configuration.
 #[non_exhaustive]
 #[derive(Copy, Clone)]
 pub struct Config {
+    /// SPI mode.
     pub mode: Mode,
+    /// Bit order.
     pub bit_order: BitOrder,
+    /// Clock frequency.
     pub frequency: Hertz,
 }
 
@@ -72,6 +84,7 @@ impl Config {
     }
 }
 
+/// SPI driver.
 pub struct Spi<'d, T: Instance, Tx, Rx> {
     _peri: PeripheralRef<'d, T>,
     sck: Option<PeripheralRef<'d, AnyPin>>,
@@ -83,6 +96,7 @@ pub struct Spi<'d, T: Instance, Tx, Rx> {
 }
 
 impl<'d, T: Instance, Tx, Rx> Spi<'d, T, Tx, Rx> {
+    /// Create a new SPI driver.
     pub fn new(
         peri: impl Peripheral<P = T> + 'd,
         sck: impl Peripheral<P = impl SckPin<T>> + 'd,
@@ -117,6 +131,7 @@ impl<'d, T: Instance, Tx, Rx> Spi<'d, T, Tx, Rx> {
         )
     }
 
+    /// Create a new SPI driver, in RX-only mode (only MISO pin, no MOSI).
     pub fn new_rxonly(
         peri: impl Peripheral<P = T> + 'd,
         sck: impl Peripheral<P = impl SckPin<T>> + 'd,
@@ -142,6 +157,7 @@ impl<'d, T: Instance, Tx, Rx> Spi<'d, T, Tx, Rx> {
         )
     }
 
+    /// Create a new SPI driver, in TX-only mode (only MOSI pin, no MISO).
     pub fn new_txonly(
         peri: impl Peripheral<P = T> + 'd,
         sck: impl Peripheral<P = impl SckPin<T>> + 'd,
@@ -167,6 +183,9 @@ impl<'d, T: Instance, Tx, Rx> Spi<'d, T, Tx, Rx> {
         )
     }
 
+    /// Create a new SPI driver, in TX-only mode, without SCK pin.
+    ///
+    /// This can be useful for bit-banging non-SPI protocols.
     pub fn new_txonly_nosck(
         peri: impl Peripheral<P = T> + 'd,
         mosi: impl Peripheral<P = impl MosiPin<T>> + 'd,
@@ -230,8 +249,7 @@ impl<'d, T: Instance, Tx, Rx> Spi<'d, T, Tx, Rx> {
 
         let lsbfirst = config.raw_byte_order();
 
-        T::enable();
-        T::reset();
+        T::enable_and_reset();
 
         #[cfg(any(spi_v1, spi_f1))]
         {
@@ -293,7 +311,7 @@ impl<'d, T: Instance, Tx, Rx> Spi<'d, T, Tx, Rx> {
                 w.set_ssom(vals::Ssom::ASSERTED);
                 w.set_midi(0);
                 w.set_mssi(0);
-                w.set_afcntr(vals::Afcntr::CONTROLLED);
+                w.set_afcntr(true);
                 w.set_ssiop(vals::Ssiop::ACTIVEHIGH);
             });
             T::REGS.cfg1().modify(|w| {
@@ -323,7 +341,7 @@ impl<'d, T: Instance, Tx, Rx> Spi<'d, T, Tx, Rx> {
     }
 
     /// Reconfigures it with the supplied config.
-    pub fn reconfigure(&mut self, config: Config) {
+    pub fn set_config(&mut self, config: &Config) -> Result<(), ()> {
         let cpha = config.raw_phase();
         let cpol = config.raw_polarity();
 
@@ -352,8 +370,10 @@ impl<'d, T: Instance, Tx, Rx> Spi<'d, T, Tx, Rx> {
                 w.set_mbr(br);
             });
         }
+        Ok(())
     }
 
+    /// Get current SPI configuration.
     pub fn get_current_config(&self) -> Config {
         #[cfg(any(spi_v1, spi_f1, spi_v2))]
         let cfg = T::REGS.cr1().read();
@@ -443,6 +463,7 @@ impl<'d, T: Instance, Tx, Rx> Spi<'d, T, Tx, Rx> {
         self.current_word_size = word_size;
     }
 
+    /// SPI write, using DMA.
     pub async fn write<W: Word>(&mut self, data: &[W]) -> Result<(), Error>
     where
         Tx: TxDma<T>,
@@ -476,6 +497,7 @@ impl<'d, T: Instance, Tx, Rx> Spi<'d, T, Tx, Rx> {
         Ok(())
     }
 
+    /// SPI read, using DMA.
     pub async fn read<W: Word>(&mut self, data: &mut [W]) -> Result<(), Error>
     where
         Tx: TxDma<T>,
@@ -579,6 +601,12 @@ impl<'d, T: Instance, Tx, Rx> Spi<'d, T, Tx, Rx> {
         Ok(())
     }
 
+    /// Bidirectional transfer, using DMA.
+    ///
+    /// This transfers both buffers at the same time, so it is NOT equivalent to `write` followed by `read`.
+    ///
+    /// The transfer runs for `max(read.len(), write.len())` bytes. If `read` is shorter extra bytes are ignored.
+    /// If `write` is shorter it is padded with zero bytes.
     pub async fn transfer<W: Word>(&mut self, read: &mut [W], write: &[W]) -> Result<(), Error>
     where
         Tx: TxDma<T>,
@@ -587,6 +615,9 @@ impl<'d, T: Instance, Tx, Rx> Spi<'d, T, Tx, Rx> {
         self.transfer_inner(read, write).await
     }
 
+    /// In-place bidirectional transfer, using DMA.
+    ///
+    /// This writes the contents of `data` on MOSI, and puts the received data on MISO in `data`, at the same time.
     pub async fn transfer_in_place<W: Word>(&mut self, data: &mut [W]) -> Result<(), Error>
     where
         Tx: TxDma<T>,
@@ -595,6 +626,7 @@ impl<'d, T: Instance, Tx, Rx> Spi<'d, T, Tx, Rx> {
         self.transfer_inner(data, data).await
     }
 
+    /// Blocking write.
     pub fn blocking_write<W: Word>(&mut self, words: &[W]) -> Result<(), Error> {
         T::REGS.cr1().modify(|w| w.set_spe(true));
         flush_rx_fifo(T::REGS);
@@ -605,6 +637,7 @@ impl<'d, T: Instance, Tx, Rx> Spi<'d, T, Tx, Rx> {
         Ok(())
     }
 
+    /// Blocking read.
     pub fn blocking_read<W: Word>(&mut self, words: &mut [W]) -> Result<(), Error> {
         T::REGS.cr1().modify(|w| w.set_spe(true));
         flush_rx_fifo(T::REGS);
@@ -615,6 +648,9 @@ impl<'d, T: Instance, Tx, Rx> Spi<'d, T, Tx, Rx> {
         Ok(())
     }
 
+    /// Blocking in-place bidirectional transfer.
+    ///
+    /// This writes the contents of `data` on MOSI, and puts the received data on MISO in `data`, at the same time.
     pub fn blocking_transfer_in_place<W: Word>(&mut self, words: &mut [W]) -> Result<(), Error> {
         T::REGS.cr1().modify(|w| w.set_spe(true));
         flush_rx_fifo(T::REGS);
@@ -625,6 +661,12 @@ impl<'d, T: Instance, Tx, Rx> Spi<'d, T, Tx, Rx> {
         Ok(())
     }
 
+    /// Blocking bidirectional transfer.
+    ///
+    /// This transfers both buffers at the same time, so it is NOT equivalent to `write` followed by `read`.
+    ///
+    /// The transfer runs for `max(read.len(), write.len())` bytes. If `read` is shorter extra bytes are ignored.
+    /// If `write` is shorter it is padded with zero bytes.
     pub fn blocking_transfer<W: Word>(&mut self, read: &mut [W], write: &[W]) -> Result<(), Error> {
         T::REGS.cr1().modify(|w| w.set_spe(true));
         flush_rx_fifo(T::REGS);
@@ -848,102 +890,88 @@ fn transfer_word<W: Word>(regs: Regs, tx_word: W) -> Result<W, Error> {
     Ok(rx_word)
 }
 
-mod eh02 {
-    use super::*;
+// Note: It is not possible to impl these traits generically in embedded-hal 0.2 due to a conflict with
+// some marker traits. For details, see https://github.com/rust-embedded/embedded-hal/pull/289
+macro_rules! impl_blocking {
+    ($w:ident) => {
+        impl<'d, T: Instance, Tx, Rx> embedded_hal_02::blocking::spi::Write<$w> for Spi<'d, T, Tx, Rx> {
+            type Error = Error;
 
-    // Note: It is not possible to impl these traits generically in embedded-hal 0.2 due to a conflict with
-    // some marker traits. For details, see https://github.com/rust-embedded/embedded-hal/pull/289
-    macro_rules! impl_blocking {
-        ($w:ident) => {
-            impl<'d, T: Instance, Tx, Rx> embedded_hal_02::blocking::spi::Write<$w> for Spi<'d, T, Tx, Rx> {
-                type Error = Error;
-
-                fn write(&mut self, words: &[$w]) -> Result<(), Self::Error> {
-                    self.blocking_write(words)
-                }
+            fn write(&mut self, words: &[$w]) -> Result<(), Self::Error> {
+                self.blocking_write(words)
             }
+        }
 
-            impl<'d, T: Instance, Tx, Rx> embedded_hal_02::blocking::spi::Transfer<$w> for Spi<'d, T, Tx, Rx> {
-                type Error = Error;
+        impl<'d, T: Instance, Tx, Rx> embedded_hal_02::blocking::spi::Transfer<$w> for Spi<'d, T, Tx, Rx> {
+            type Error = Error;
 
-                fn transfer<'w>(&mut self, words: &'w mut [$w]) -> Result<&'w [$w], Self::Error> {
-                    self.blocking_transfer_in_place(words)?;
-                    Ok(words)
-                }
+            fn transfer<'w>(&mut self, words: &'w mut [$w]) -> Result<&'w [$w], Self::Error> {
+                self.blocking_transfer_in_place(words)?;
+                Ok(words)
             }
-        };
-    }
-
-    impl_blocking!(u8);
-    impl_blocking!(u16);
+        }
+    };
 }
 
-#[cfg(feature = "unstable-traits")]
-mod eh1 {
-    use super::*;
+impl_blocking!(u8);
+impl_blocking!(u16);
 
-    impl<'d, T: Instance, Tx, Rx> embedded_hal_1::spi::ErrorType for Spi<'d, T, Tx, Rx> {
-        type Error = Error;
+impl<'d, T: Instance, Tx, Rx> embedded_hal_1::spi::ErrorType for Spi<'d, T, Tx, Rx> {
+    type Error = Error;
+}
+
+impl<'d, T: Instance, W: Word, Tx, Rx> embedded_hal_1::spi::SpiBus<W> for Spi<'d, T, Tx, Rx> {
+    fn flush(&mut self) -> Result<(), Self::Error> {
+        Ok(())
     }
 
-    impl<'d, T: Instance, W: Word, Tx, Rx> embedded_hal_1::spi::SpiBus<W> for Spi<'d, T, Tx, Rx> {
-        fn flush(&mut self) -> Result<(), Self::Error> {
-            Ok(())
-        }
-
-        fn read(&mut self, words: &mut [W]) -> Result<(), Self::Error> {
-            self.blocking_read(words)
-        }
-
-        fn write(&mut self, words: &[W]) -> Result<(), Self::Error> {
-            self.blocking_write(words)
-        }
-
-        fn transfer(&mut self, read: &mut [W], write: &[W]) -> Result<(), Self::Error> {
-            self.blocking_transfer(read, write)
-        }
-
-        fn transfer_in_place(&mut self, words: &mut [W]) -> Result<(), Self::Error> {
-            self.blocking_transfer_in_place(words)
-        }
+    fn read(&mut self, words: &mut [W]) -> Result<(), Self::Error> {
+        self.blocking_read(words)
     }
 
-    impl embedded_hal_1::spi::Error for Error {
-        fn kind(&self) -> embedded_hal_1::spi::ErrorKind {
-            match *self {
-                Self::Framing => embedded_hal_1::spi::ErrorKind::FrameFormat,
-                Self::Crc => embedded_hal_1::spi::ErrorKind::Other,
-                Self::ModeFault => embedded_hal_1::spi::ErrorKind::ModeFault,
-                Self::Overrun => embedded_hal_1::spi::ErrorKind::Overrun,
-            }
+    fn write(&mut self, words: &[W]) -> Result<(), Self::Error> {
+        self.blocking_write(words)
+    }
+
+    fn transfer(&mut self, read: &mut [W], write: &[W]) -> Result<(), Self::Error> {
+        self.blocking_transfer(read, write)
+    }
+
+    fn transfer_in_place(&mut self, words: &mut [W]) -> Result<(), Self::Error> {
+        self.blocking_transfer_in_place(words)
+    }
+}
+
+impl embedded_hal_1::spi::Error for Error {
+    fn kind(&self) -> embedded_hal_1::spi::ErrorKind {
+        match *self {
+            Self::Framing => embedded_hal_1::spi::ErrorKind::FrameFormat,
+            Self::Crc => embedded_hal_1::spi::ErrorKind::Other,
+            Self::ModeFault => embedded_hal_1::spi::ErrorKind::ModeFault,
+            Self::Overrun => embedded_hal_1::spi::ErrorKind::Overrun,
         }
     }
 }
 
-#[cfg(all(feature = "unstable-traits", feature = "nightly"))]
-mod eha {
-    use super::*;
+impl<'d, T: Instance, Tx: TxDma<T>, Rx: RxDma<T>, W: Word> embedded_hal_async::spi::SpiBus<W> for Spi<'d, T, Tx, Rx> {
+    async fn flush(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
 
-    impl<'d, T: Instance, Tx: TxDma<T>, Rx: RxDma<T>, W: Word> embedded_hal_async::spi::SpiBus<W> for Spi<'d, T, Tx, Rx> {
-        async fn flush(&mut self) -> Result<(), Self::Error> {
-            Ok(())
-        }
+    async fn write(&mut self, words: &[W]) -> Result<(), Self::Error> {
+        self.write(words).await
+    }
 
-        async fn write(&mut self, words: &[W]) -> Result<(), Self::Error> {
-            self.write(words).await
-        }
+    async fn read(&mut self, words: &mut [W]) -> Result<(), Self::Error> {
+        self.read(words).await
+    }
 
-        async fn read(&mut self, words: &mut [W]) -> Result<(), Self::Error> {
-            self.read(words).await
-        }
+    async fn transfer(&mut self, read: &mut [W], write: &[W]) -> Result<(), Self::Error> {
+        self.transfer(read, write).await
+    }
 
-        async fn transfer(&mut self, read: &mut [W], write: &[W]) -> Result<(), Self::Error> {
-            self.transfer(read, write).await
-        }
-
-        async fn transfer_in_place(&mut self, words: &mut [W]) -> Result<(), Self::Error> {
-            self.transfer_in_place(words).await
-        }
+    async fn transfer_in_place(&mut self, words: &mut [W]) -> Result<(), Self::Error> {
+        self.transfer_in_place(words).await
     }
 }
 
@@ -959,6 +987,7 @@ pub(crate) mod sealed {
     }
 }
 
+/// Word sizes usable for SPI.
 pub trait Word: word::Word + sealed::Word {}
 
 macro_rules! impl_word {
@@ -1038,7 +1067,9 @@ mod word_impl {
     impl_word!(u32, 32 - 1);
 }
 
+/// SPI instance trait.
 pub trait Instance: Peripheral<P = Self> + sealed::Instance + RccPeripheral {}
+
 pin_trait!(SckPin, Instance);
 pin_trait!(MosiPin, Instance);
 pin_trait!(MisoPin, Instance);
@@ -1061,7 +1092,8 @@ foreach_peripheral!(
 
 impl<'d, T: Instance, Tx, Rx> SetConfig for Spi<'d, T, Tx, Rx> {
     type Config = Config;
-    fn set_config(&mut self, config: &Self::Config) {
-        self.reconfigure(*config);
+    type ConfigError = ();
+    fn set_config(&mut self, config: &Self::Config) -> Result<(), ()> {
+        self.set_config(config)
     }
 }

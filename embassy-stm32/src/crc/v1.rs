@@ -5,6 +5,7 @@ use crate::peripherals::CRC;
 use crate::rcc::sealed::RccPeripheral;
 use crate::Peripheral;
 
+/// CRC driver.
 pub struct Crc<'d> {
     _peri: PeripheralRef<'d, CRC>,
 }
@@ -16,9 +17,7 @@ impl<'d> Crc<'d> {
 
         // Note: enable and reset come from RccPeripheral.
         // enable CRC clock in RCC.
-        CRC::enable();
-        // Reset CRC to default values.
-        CRC::reset();
+        CRC::enable_and_reset();
         // Peripheral the peripheral
         let mut instance = Self { _peri: peripheral };
         instance.reset();
@@ -36,6 +35,7 @@ impl<'d> Crc<'d> {
         PAC_CRC.dr().write_value(word);
         self.read()
     }
+
     /// Feed a slice of words to the peripheral and return the result.
     pub fn feed_words(&mut self, words: &[u32]) -> u32 {
         for word in words {
@@ -44,6 +44,8 @@ impl<'d> Crc<'d> {
 
         self.read()
     }
+
+    /// Read the CRC result value.
     pub fn read(&self) -> u32 {
         PAC_CRC.dr().read()
     }

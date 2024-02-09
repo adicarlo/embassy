@@ -6,15 +6,19 @@ use crate::peripherals::CRC;
 use crate::rcc::sealed::RccPeripheral;
 use crate::Peripheral;
 
+/// CRC driver.
 pub struct Crc<'d> {
     _peripheral: PeripheralRef<'d, CRC>,
     _config: Config,
 }
 
+/// CRC configuration errlr
 pub enum ConfigError {
+    /// The selected polynomial is invalid.
     InvalidPolynomial,
 }
 
+/// CRC configuration
 pub struct Config {
     reverse_in: InputReverseConfig,
     reverse_out: bool,
@@ -25,14 +29,20 @@ pub struct Config {
     crc_poly: u32,
 }
 
+/// Input reverse configuration.
 pub enum InputReverseConfig {
+    /// Don't reverse anything
     None,
+    /// Reverse bytes
     Byte,
+    /// Reverse 16-bit halfwords.
     Halfword,
+    /// Reverse 32-bit words.
     Word,
 }
 
 impl Config {
+    /// Create a new CRC config.
     pub fn new(
         reverse_in: InputReverseConfig,
         reverse_out: bool,
@@ -57,7 +67,9 @@ impl Config {
     }
 }
 
+/// Polynomial size
 #[cfg(crc_v3)]
+#[allow(missing_docs)]
 pub enum PolySize {
     Width7,
     Width8,
@@ -69,21 +81,19 @@ impl<'d> Crc<'d> {
     /// Instantiates the CRC32 peripheral and initializes it to default values.
     pub fn new(peripheral: impl Peripheral<P = CRC> + 'd, config: Config) -> Self {
         // Note: enable and reset come from RccPeripheral.
-        // enable CRC clock in RCC.
-        CRC::enable();
-        // Reset CRC to default values.
-        CRC::reset();
+        // reset to default values and enable CRC clock in RCC.
+        CRC::enable_and_reset();
         into_ref!(peripheral);
         let mut instance = Self {
             _peripheral: peripheral,
             _config: config,
         };
-        CRC::reset();
         instance.reconfigure();
         instance.reset();
         instance
     }
 
+    /// Reset the CRC engine.
     pub fn reset(&mut self) {
         PAC_CRC.cr().modify(|w| w.set_reset(true));
     }

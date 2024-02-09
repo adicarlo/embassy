@@ -55,14 +55,13 @@
 
 #![no_std]
 #![no_main]
-#![feature(type_alias_impl_trait)]
 
 use cortex_m_rt::entry;
 use defmt::{info, unwrap};
 use embassy_executor::{Executor, InterruptExecutor};
 use embassy_rp::interrupt;
 use embassy_rp::interrupt::{InterruptExt, Priority};
-use embassy_time::{Duration, Instant, Timer, TICK_HZ};
+use embassy_time::{Instant, Timer, TICK_HZ};
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
 
@@ -70,7 +69,7 @@ use {defmt_rtt as _, panic_probe as _};
 async fn run_high() {
     loop {
         info!("        [high] tick!");
-        Timer::after(Duration::from_ticks(673740)).await;
+        Timer::after_ticks(673740).await;
     }
 }
 
@@ -87,7 +86,7 @@ async fn run_med() {
         let ms = end.duration_since(start).as_ticks() * 1000 / TICK_HZ;
         info!("    [med] done in {} ms", ms);
 
-        Timer::after(Duration::from_ticks(53421)).await;
+        Timer::after_ticks(53421).await;
     }
 }
 
@@ -104,7 +103,7 @@ async fn run_low() {
         let ms = end.duration_since(start).as_ticks() * 1000 / TICK_HZ;
         info!("[low] done in {} ms", ms);
 
-        Timer::after(Duration::from_ticks(82983)).await;
+        Timer::after_ticks(82983).await;
     }
 }
 

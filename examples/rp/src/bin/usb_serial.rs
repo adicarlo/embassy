@@ -4,7 +4,6 @@
 
 #![no_std]
 #![no_main]
-#![feature(type_alias_impl_trait)]
 
 use defmt::{info, panic};
 use embassy_executor::Spawner;
@@ -60,6 +59,7 @@ async fn main(_spawner: Spawner) {
         &mut device_descriptor,
         &mut config_descriptor,
         &mut bos_descriptor,
+        &mut [], // no msos descriptors
         &mut control_buf,
     );
 

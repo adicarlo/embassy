@@ -1,6 +1,5 @@
 #![no_std]
 #![no_main]
-#![feature(type_alias_impl_trait)]
 
 use defmt::*;
 use embassy_stm32::adc::{Adc, Resolution};
@@ -13,7 +12,7 @@ fn main() -> ! {
     info!("Hello World!");
 
     pac::RCC.ccipr().modify(|w| {
-        w.set_adcsel(0b11);
+        w.set_adcsel(pac::rcc::vals::Adcsel::SYS);
     });
     pac::RCC.ahb2enr().modify(|w| w.set_adcen(true));
 

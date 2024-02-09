@@ -3,22 +3,35 @@ use core::mem;
 use core::sync::atomic::{compiler_fence, Ordering};
 use core::task::Poll;
 
+use embassy_embedded_hal::SetConfig;
 use embassy_hal_internal::PeripheralRef;
 use futures::future::{select, Either};
 
-use super::{clear_interrupt_flags, rdr, sr, BasicInstance, Error, UartRx};
+use super::{clear_interrupt_flags, rdr, reconfigure, sr, BasicInstance, Config, ConfigError, Error, RxDma, UartRx};
 use crate::dma::ReadableRingBuffer;
 use crate::usart::{Regs, Sr};
 
+/// Rx-only Ring-buffered UART Driver
+///
+/// Created with [UartRx::into_ring_buffered]
 pub struct RingBufferedUartRx<'d, T: BasicInstance, RxDma: super::RxDma<T>> {
     _peri: PeripheralRef<'d, T>,
     ring_buf: ReadableRingBuffer<'d, RxDma, u8>,
 }
 
+impl<'d, T: BasicInstance, RxDma: super::RxDma<T>> SetConfig for RingBufferedUartRx<'d, T, RxDma> {
+    type Config = Config;
+    type ConfigError = ConfigError;
+
+    fn set_config(&mut self, config: &Self::Config) -> Result<(), Self::ConfigError> {
+        self.set_config(config)
+    }
+}
+
 impl<'d, T: BasicInstance, RxDma: super::RxDma<T>> UartRx<'d, T, RxDma> {
     /// Turn the `UartRx` into a buffered uart which can continously receive in the background
-    /// without the possibility of loosing bytes. The `dma_buf` is a buffer registered to the
-    /// DMA controller, and must be sufficiently large, such that it will not overflow.
+    /// without the possibility of losing bytes. The `dma_buf` is a buffer registered to the
+    /// DMA controller, and must be large enough to prevent overflows.
     pub fn into_ring_buffered(self, dma_buf: &'d mut [u8]) -> RingBufferedUartRx<'d, T, RxDma> {
         assert!(!dma_buf.is_empty() && dma_buf.len() <= 0xFFFF);
 
@@ -29,7 +42,7 @@ impl<'d, T: BasicInstance, RxDma: super::RxDma<T>> UartRx<'d, T, RxDma> {
         let rx_dma = unsafe { self.rx_dma.clone_unchecked() };
         let _peri = unsafe { self._peri.clone_unchecked() };
 
-        let ring_buf = unsafe { ReadableRingBuffer::new_read(rx_dma, request, rdr(T::regs()), dma_buf, opts) };
+        let ring_buf = unsafe { ReadableRingBuffer::new(rx_dma, request, rdr(T::regs()), dma_buf, opts) };
 
         // Don't disable the clock
         mem::forget(self);
@@ -39,6 +52,7 @@ impl<'d, T: BasicInstance, RxDma: super::RxDma<T>> UartRx<'d, T, RxDma> {
 }
 
 impl<'d, T: BasicInstance, RxDma: super::RxDma<T>> RingBufferedUartRx<'d, T, RxDma> {
+    /// Clear the ring buffer and start receiving in the background
     pub fn start(&mut self) -> Result<(), Error> {
         // Clear the ring buffer so that it is ready to receive data
         self.ring_buf.clear();
@@ -52,6 +66,12 @@ impl<'d, T: BasicInstance, RxDma: super::RxDma<T>> RingBufferedUartRx<'d, T, RxD
         self.teardown_uart();
 
         Err(err)
+    }
+
+    /// Cleanly stop and reconfigure the driver
+    pub fn set_config(&mut self, config: &Config) -> Result<(), ConfigError> {
+        self.teardown_uart();
+        reconfigure::<T>(config)
     }
 
     /// Start uart background receive
@@ -225,28 +245,20 @@ fn clear_idle_flag(r: Regs) -> Sr {
     sr
 }
 
-#[cfg(all(feature = "unstable-traits", feature = "nightly"))]
-mod eio {
-    use embedded_io_async::{ErrorType, Read};
+impl<T, Rx> embedded_io_async::ErrorType for RingBufferedUartRx<'_, T, Rx>
+where
+    T: BasicInstance,
+    Rx: RxDma<T>,
+{
+    type Error = Error;
+}
 
-    use super::RingBufferedUartRx;
-    use crate::usart::{BasicInstance, Error, RxDma};
-
-    impl<T, Rx> ErrorType for RingBufferedUartRx<'_, T, Rx>
-    where
-        T: BasicInstance,
-        Rx: RxDma<T>,
-    {
-        type Error = Error;
-    }
-
-    impl<T, Rx> Read for RingBufferedUartRx<'_, T, Rx>
-    where
-        T: BasicInstance,
-        Rx: RxDma<T>,
-    {
-        async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
-            self.read(buf).await
-        }
+impl<T, Rx> embedded_io_async::Read for RingBufferedUartRx<'_, T, Rx>
+where
+    T: BasicInstance,
+    Rx: RxDma<T>,
+{
+    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
+        self.read(buf).await
     }
 }

@@ -1,5 +1,10 @@
 #![no_std]
-#![cfg_attr(feature = "nightly", feature(async_fn_in_trait, impl_trait_projections))]
+#![allow(async_fn_in_trait)]
+#![doc = include_str!("../README.md")]
+#![warn(missing_docs)]
+
+//! ## Feature flags
+#![doc = document_features::document_features!(feature_label = r#"<span class="stab portability"><code>{feature}</code></span>"#)]
 
 // This mod MUST go first, so that the others see its macros.
 pub(crate) mod fmt;
@@ -10,12 +15,14 @@ mod critical_section_impl;
 mod intrinsics;
 
 pub mod adc;
+pub mod bootsel;
 pub mod clocks;
 pub mod dma;
 pub mod flash;
 mod float;
 pub mod gpio;
 pub mod i2c;
+pub mod i2c_slave;
 pub mod multicore;
 pub mod pwm;
 mod reset;
@@ -23,16 +30,13 @@ pub mod rom_data;
 pub mod rtc;
 pub mod spi;
 #[cfg(feature = "time-driver")]
-pub mod timer;
+pub mod time_driver;
 pub mod uart;
-#[cfg(feature = "nightly")]
 pub mod usb;
 pub mod watchdog;
 
 // PIO
-// TODO: move `pio_instr_util` and `relocate` to inside `pio`
 pub mod pio;
-pub mod pio_instr_util;
 pub(crate) mod relocate;
 
 // Reexports
@@ -85,11 +89,23 @@ embassy_hal_internal::interrupt_mod!(
 /// This defines the right interrupt handlers, and creates a unit struct (like `struct Irqs;`)
 /// and implements the right [`Binding`]s for it. You can pass this struct to drivers to
 /// prove at compile-time that the right interrupts have been bound.
+///
+/// Example of how to bind one interrupt:
+///
+/// ```rust,ignore
+/// use embassy_rp::{bind_interrupts, usb, peripherals};
+///
+/// bind_interrupts!(struct Irqs {
+///     USBCTRL_IRQ => usb::InterruptHandler<peripherals::USB>;
+/// });
+/// ```
+///
 // developer note: this macro can't be in `embassy-hal-internal` due to the use of `$crate`.
 #[macro_export]
 macro_rules! bind_interrupts {
     ($vis:vis struct $name:ident { $($irq:ident => $($handler:ty),*;)* }) => {
-        $vis struct $name;
+            #[derive(Copy, Clone)]
+            $vis struct $name;
 
         $(
             #[allow(non_snake_case)]
@@ -191,6 +207,7 @@ embassy_hal_internal::peripherals! {
     PIO1,
 
     WATCHDOG,
+    BOOTSEL,
 }
 
 macro_rules! select_bootloader {
@@ -233,7 +250,6 @@ select_bootloader! {
 /// # Usage
 ///
 /// ```no_run
-/// #![feature(type_alias_impl_trait)]
 /// use embassy_rp::install_core0_stack_guard;
 /// use embassy_executor::{Executor, Spawner};
 ///
@@ -288,11 +304,14 @@ fn install_stack_guard(stack_bottom: *mut usize) -> Result<(), ()> {
     Ok(())
 }
 
+/// HAL configuration for RP.
 pub mod config {
     use crate::clocks::ClockConfig;
 
+    /// HAL configuration passed when initializing.
     #[non_exhaustive]
     pub struct Config {
+        /// Clock configuration.
         pub clocks: ClockConfig,
     }
 
@@ -305,12 +324,18 @@ pub mod config {
     }
 
     impl Config {
+        /// Create a new configuration with the provided clock config.
         pub fn new(clocks: ClockConfig) -> Self {
             Self { clocks }
         }
     }
 }
 
+/// Initialize the `embassy-rp` HAL with the provided configuration.
+///
+/// This returns the peripheral singletons that can be used for creating drivers.
+///
+/// This should only be called once at startup, otherwise it panics.
 pub fn init(config: config::Config) -> Peripherals {
     // Do this first, so that it panics if user is calling `init` a second time
     // before doing anything important.
@@ -319,7 +344,7 @@ pub fn init(config: config::Config) -> Peripherals {
     unsafe {
         clocks::init(config.clocks);
         #[cfg(feature = "time-driver")]
-        timer::init();
+        time_driver::init();
         dma::init();
         gpio::init();
     }

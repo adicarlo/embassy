@@ -1,6 +1,5 @@
 #![no_std]
 #![no_main]
-#![feature(type_alias_impl_trait)]
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -41,7 +40,7 @@ async fn main(_spawner: Spawner) {
     let mut config_descriptor = [0; 256];
     let mut bos_descriptor = [0; 256];
     // You can also add a Microsoft OS descriptor.
-    // let mut msos_descriptor = [0; 256];
+    let mut msos_descriptor = [0; 256];
     let mut control_buf = [0; 64];
     let request_handler = MyRequestHandler {};
     let mut device_handler = MyDeviceHandler::new();
@@ -54,7 +53,7 @@ async fn main(_spawner: Spawner) {
         &mut device_descriptor,
         &mut config_descriptor,
         &mut bos_descriptor,
-        // &mut msos_descriptor,
+        &mut msos_descriptor,
         &mut control_buf,
     );
 
@@ -77,6 +76,9 @@ async fn main(_spawner: Spawner) {
 
     // Set up the signal pin that will be used to trigger the keyboard.
     let mut signal_pin = Input::new(p.PIN_16, Pull::None);
+
+    // Enable the schmitt trigger to slightly debounce.
+    signal_pin.set_schmitt(true);
 
     let (reader, mut writer) = hid.split();
 

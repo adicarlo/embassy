@@ -6,11 +6,11 @@ The Embassy executor is an async/await executor designed for embedded usage alon
 
 * No `alloc`, no heap needed. Task are statically allocated.
 * No "fixed capacity" data structures, executor works with 1 or 1000 tasks without needing config/tuning.
-* Integrated timer queue: sleeping is easy, just do `Timer::after(Duration::from_secs(1)).await;`.
+* Integrated timer queue: sleeping is easy, just do `Timer::after_secs(1).await;`.
 * No busy-loop polling: CPU sleeps when there's no work to do, using interrupts or `WFE/SEV`.
 * Efficient polling: a wake will only poll the woken task, not all of them.
 * Fair: a task can't monopolize CPU time even if it's constantly being woken. All other tasks get a chance to run before a given task gets polled for the second time.
-* Creating multiple executor instances is supported, to run tasks with multiple priority levels. This allows higher-priority tasks to preempt lower-priority tasks.
+* Creating multiple executor instances is supported, to run tasks at different priority levels. This allows higher-priority tasks to preempt lower-priority tasks.
 
 == Executor
 
@@ -27,7 +27,7 @@ If you use the `#[embassy_executor::main]` macro in your application, it creates
 
 Interrupts are a common way for peripherals to signal completion of some operation and fits well with the async execution model. The following diagram describes a typical application flow where (1) a task is polled and is attempting to make progress. The task then (2) instructs the peripheral to perform some operation, and awaits. After some time has passed, (3) an interrupt is raised, marking the completion of the operation.
 
-The peripheral HAL then (4) ensures that interrupt signals are routed to to the peripheral and updating the peripheral state with the results of the operation. The executor is then (5) notified that the task should be polled, which it will do.
+The peripheral HAL then (4) ensures that interrupt signals are routed to the peripheral and updating the peripheral state with the results of the operation. The executor is then (5) notified that the task should be polled, which it will do.
 
 image::embassy_irq.png[Interrupt handling]
 

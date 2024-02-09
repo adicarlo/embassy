@@ -1,6 +1,5 @@
 #![no_std]
 #![no_main]
-#![feature(type_alias_impl_trait)]
 
 use defmt::*;
 use embassy_executor::Spawner;
@@ -36,7 +35,7 @@ async fn main(spawner: Spawner) -> ! {
     info!("Hello World!");
 
     let config = Config::default();
-    let mut usart = Uart::new(p.UART7, p.PF6, p.PF7, Irqs, p.DMA1_CH0, p.DMA1_CH1, config);
+    let mut usart = Uart::new(p.UART7, p.PF6, p.PF7, Irqs, p.DMA1_CH0, p.DMA1_CH1, config).unwrap();
     unwrap!(usart.blocking_write(b"Type 8 chars to echo!\r\n"));
 
     let (mut tx, rx) = usart.split();

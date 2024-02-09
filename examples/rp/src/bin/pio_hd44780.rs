@@ -3,7 +3,6 @@
 
 #![no_std]
 #![no_main]
-#![feature(type_alias_impl_trait)]
 
 use core::fmt::Write;
 
@@ -15,7 +14,7 @@ use embassy_rp::pio::{
 };
 use embassy_rp::pwm::{self, Pwm};
 use embassy_rp::{bind_interrupts, into_ref, Peripheral, PeripheralRef};
-use embassy_time::{Duration, Instant, Timer};
+use embassy_time::{Instant, Timer};
 use {defmt_rtt as _, panic_probe as _};
 
 bind_interrupts!(pub struct Irqs {
@@ -66,7 +65,7 @@ async fn main(_spawner: Spawner) {
         let mut buf = Buf([0; 16], 0);
         write!(buf, "up {}s", Instant::now().as_micros() as f32 / 1e6).unwrap();
         hd.add_line(&buf.0[0..buf.1]).await;
-        Timer::after(Duration::from_secs(1)).await;
+        Timer::after_secs(1).await;
     }
 }
 

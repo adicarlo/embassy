@@ -1,9 +1,9 @@
+//! Universal Serial Bus (USB)
+
 use crate::interrupt;
 use crate::rcc::RccPeripheral;
 
-#[cfg(feature = "nightly")]
 mod usb;
-#[cfg(feature = "nightly")]
 pub use usb::*;
 
 pub(crate) mod sealed {
@@ -12,7 +12,9 @@ pub(crate) mod sealed {
     }
 }
 
+/// USB instance trait.
 pub trait Instance: sealed::Instance + RccPeripheral + 'static {
+    /// Interrupt for this USB instance.
     type Interrupt: interrupt::typelevel::Interrupt;
 }
 

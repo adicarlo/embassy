@@ -40,6 +40,7 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
         // Handle RX
         while r.gintsts().read().rxflvl() {
             let status = r.grxstsp().read();
+            trace!("=== status {:08x}", status.0);
             let ep_num = status.epnum() as usize;
             let len = status.bcnt() as usize;
 
@@ -50,6 +51,15 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
                     trace!("SETUP_DATA_RX");
                     assert!(len == 8, "invalid SETUP packet length={}", len);
                     assert!(ep_num == 0, "invalid SETUP packet endpoint={}", ep_num);
+
+                    // flushing TX if something stuck in control endpoint
+                    if r.dieptsiz(ep_num).read().pktcnt() != 0 {
+                        r.grstctl().modify(|w| {
+                            w.set_txfnum(ep_num as _);
+                            w.set_txfflsh(true);
+                        });
+                        while r.grstctl().read().txfflsh() {}
+                    }
 
                     if state.ep0_setup_ready.load(Ordering::Relaxed) == false {
                         // SAFETY: exclusive access ensured by atomic bool
@@ -96,6 +106,11 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
                 }
                 vals::Pktstsd::SETUP_DATA_DONE => {
                     trace!("SETUP_DATA_DONE ep={}", ep_num);
+
+                    if quirk_setup_late_cnak(r) {
+                        // Clear NAK to indicate we are ready to receive more data
+                        r.doepctl(ep_num).modify(|w| w.set_cnak(true));
+                    }
                 }
                 x => trace!("unknown PKTSTS: {}", x.to_bits()),
             }
@@ -189,6 +204,7 @@ pub enum PhyType {
 }
 
 impl PhyType {
+    /// Get whether this PHY is any of the internal types.
     pub fn internal(&self) -> bool {
         match self {
             PhyType::InternalFullSpeed | PhyType::InternalHighSpeed => true,
@@ -196,6 +212,7 @@ impl PhyType {
         }
     }
 
+    /// Get whether this PHY is any of the high-speed types.
     pub fn high_speed(&self) -> bool {
         match self {
             PhyType::InternalFullSpeed => false,
@@ -203,7 +220,7 @@ impl PhyType {
         }
     }
 
-    pub fn to_dspd(&self) -> vals::Dspd {
+    fn to_dspd(&self) -> vals::Dspd {
         match self {
             PhyType::InternalFullSpeed => vals::Dspd::FULL_SPEED_INTERNAL,
             PhyType::InternalHighSpeed => vals::Dspd::HIGH_SPEED,
@@ -215,6 +232,7 @@ impl PhyType {
 /// Indicates that [State::ep_out_buffers] is empty.
 const EP_OUT_BUFFER_EMPTY: u16 = u16::MAX;
 
+/// USB OTG driver state.
 pub struct State<const EP_COUNT: usize> {
     /// Holds received SETUP packets. Available if [State::ep0_setup_ready] is true.
     ep0_setup_data: UnsafeCell<[u8; 8]>,
@@ -232,6 +250,7 @@ unsafe impl<const EP_COUNT: usize> Send for State<EP_COUNT> {}
 unsafe impl<const EP_COUNT: usize> Sync for State<EP_COUNT> {}
 
 impl<const EP_COUNT: usize> State<EP_COUNT> {
+    /// Create a new State.
     pub const fn new() -> Self {
         const NEW_AW: AtomicWaker = AtomicWaker::new();
         const NEW_BUF: UnsafeCell<*mut u8> = UnsafeCell::new(0 as _);
@@ -256,6 +275,7 @@ struct EndpointData {
     fifo_size_words: u16,
 }
 
+/// USB driver config.
 #[non_exhaustive]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Config {
@@ -282,6 +302,7 @@ impl Default for Config {
     }
 }
 
+/// USB driver.
 pub struct Driver<'d, T: Instance> {
     config: Config,
     phantom: PhantomData<&'d mut T>,
@@ -512,6 +533,7 @@ impl<'d, T: Instance> embassy_usb_driver::Driver<'d> for Driver<'d, T> {
     }
 }
 
+/// USB bus.
 pub struct Bus<'d, T: Instance> {
     config: Config,
     phantom: PhantomData<&'d mut T>,
@@ -540,10 +562,7 @@ impl<'d, T: Instance> Bus<'d, T> {
 impl<'d, T: Instance> Bus<'d, T> {
     fn init(&mut self) {
         #[cfg(stm32l4)]
-        {
-            crate::peripherals::PWR::enable();
-            critical_section::with(|_| crate::pac::PWR.cr2().modify(|w| w.set_usv(true)));
-        }
+        critical_section::with(|_| crate::pac::PWR.cr2().modify(|w| w.set_usv(true)));
 
         #[cfg(stm32f7)]
         {
@@ -618,15 +637,10 @@ impl<'d, T: Instance> Bus<'d, T> {
         {
             // Enable USB power
             critical_section::with(|_| {
-                crate::pac::RCC.ahb3enr().modify(|w| {
-                    w.set_pwren(true);
-                });
-                cortex_m::asm::delay(2);
-
                 crate::pac::PWR.svmcr().modify(|w| {
                     w.set_usv(true);
                     w.set_uvmen(true);
-                });
+                })
             });
 
             // Wait for USB power to stabilize
@@ -640,8 +654,7 @@ impl<'d, T: Instance> Bus<'d, T> {
             });
         }
 
-        <T as RccPeripheral>::enable();
-        <T as RccPeripheral>::reset();
+        <T as RccPeripheral>::enable_and_reset();
 
         T::Interrupt::unpend();
         unsafe { T::Interrupt::enable() };
@@ -920,11 +933,9 @@ impl<'d, T: Instance> embassy_usb_driver::Bus for Bus<'d, T> {
                 trace!("enumdne");
 
                 let speed = r.dsts().read().enumspd();
-                trace!("  speed={}", speed.to_bits());
-
-                r.gusbcfg().modify(|w| {
-                    w.set_trdt(calculate_trdt(speed, T::frequency()));
-                });
+                let trdt = calculate_trdt(speed, T::frequency());
+                trace!("  speed={} trdt={}", speed.to_bits(), trdt);
+                r.gusbcfg().modify(|w| w.set_trdt(trdt));
 
                 r.gintsts().write(|w| w.set_enumdne(true)); // clear
                 Self::restore_irqs();
@@ -1088,6 +1099,7 @@ trait Dir {
     fn dir() -> Direction;
 }
 
+/// Marker type for the "IN" direction.
 pub enum In {}
 impl Dir for In {
     fn dir() -> Direction {
@@ -1095,6 +1107,7 @@ impl Dir for In {
     }
 }
 
+/// Marker type for the "OUT" direction.
 pub enum Out {}
 impl Dir for Out {
     fn dir() -> Direction {
@@ -1102,6 +1115,7 @@ impl Dir for Out {
     }
 }
 
+/// USB endpoint.
 pub struct Endpoint<'d, T: Instance, D> {
     _phantom: PhantomData<(&'d mut T, D)>,
     info: EndpointInfo,
@@ -1295,6 +1309,7 @@ impl<'d, T: Instance> embassy_usb_driver::EndpointIn for Endpoint<'d, T, In> {
     }
 }
 
+/// USB control pipe.
 pub struct ControlPipe<'d, T: Instance> {
     _phantom: PhantomData<&'d mut T>,
     max_packet_size: u16,
@@ -1313,20 +1328,22 @@ impl<'d, T: Instance> embassy_usb_driver::ControlPipe for ControlPipe<'d, T> {
 
             state.ep_out_wakers[0].register(cx.waker());
 
+            let r = T::regs();
+
             if state.ep0_setup_ready.load(Ordering::Relaxed) {
                 let data = unsafe { *state.ep0_setup_data.get() };
                 state.ep0_setup_ready.store(false, Ordering::Release);
 
                 // EP0 should not be controlled by `Bus` so this RMW does not need a critical section
                 // Receive 1 SETUP packet
-                T::regs().doeptsiz(self.ep_out.info.addr.index()).modify(|w| {
+                r.doeptsiz(self.ep_out.info.addr.index()).modify(|w| {
                     w.set_rxdpid_stupcnt(1);
                 });
 
                 // Clear NAK to indicate we are ready to receive more data
-                T::regs().doepctl(self.ep_out.info.addr.index()).modify(|w| {
-                    w.set_cnak(true);
-                });
+                if !quirk_setup_late_cnak(r) {
+                    r.doepctl(self.ep_out.info.addr.index()).modify(|w| w.set_cnak(true));
+                }
 
                 trace!("SETUP received: {:?}", data);
                 Poll::Ready(data)
@@ -1461,4 +1478,8 @@ fn calculate_trdt(speed: vals::Dspd, ahb_freq: Hertz) -> u8 {
         }
         _ => unimplemented!(),
     }
+}
+
+fn quirk_setup_late_cnak(r: crate::pac::otg::Otg) -> bool {
+    r.cid().read().0 & 0xf000 == 0x1000
 }

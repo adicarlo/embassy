@@ -9,7 +9,7 @@ use pac::FLASH_SIZE;
 use super::{FlashBank, FlashRegion, FlashSector, FLASH_REGIONS, WRITE_SIZE};
 use crate::flash::Error;
 use crate::pac;
-
+#[allow(missing_docs)] // TODO
 #[cfg(any(stm32f427, stm32f429, stm32f437, stm32f439, stm32f469, stm32f479))]
 mod alt_regions {
     use core::marker::PhantomData;
@@ -142,7 +142,6 @@ mod alt_regions {
                 }
             }
 
-            #[cfg(feature = "nightly")]
             impl embedded_storage_async::nor_flash::ReadNorFlash for $type_name<'_, Async> {
                 const READ_SIZE: usize = crate::flash::READ_SIZE;
 
@@ -155,7 +154,6 @@ mod alt_regions {
                 }
             }
 
-            #[cfg(feature = "nightly")]
             impl embedded_storage_async::nor_flash::NorFlash for $type_name<'_, Async> {
                 const WRITE_SIZE: usize = $region.write_size as usize;
                 const ERASE_SIZE: usize = $region.erase_size as usize;
@@ -228,8 +226,10 @@ pub(crate) unsafe fn lock() {
 }
 
 pub(crate) unsafe fn unlock() {
-    pac::FLASH.keyr().write(|w| w.set_key(0x45670123));
-    pac::FLASH.keyr().write(|w| w.set_key(0xCDEF89AB));
+    if pac::FLASH.cr().read().lock() {
+        pac::FLASH.keyr().write_value(0x4567_0123);
+        pac::FLASH.keyr().write_value(0xCDEF_89AB);
+    }
 }
 
 pub(crate) unsafe fn enable_write() {
@@ -337,7 +337,7 @@ pub(crate) unsafe fn blocking_erase_sector(sector: &FlashSector) -> Result<(), E
 
 pub(crate) fn clear_all_err() {
     // read and write back the same value.
-    // This clears all "write 0 to clear" bits.
+    // This clears all "write 1 to clear" bits.
     pac::FLASH.sr().modify(|_| {});
 }
 
@@ -463,7 +463,7 @@ pub(crate) fn assert_not_corrupted_read(end_address: u32) {
         feature = "stm32f439vg",
         feature = "stm32f439zg",
     ))]
-    if second_bank_read && unsafe { pac::DBGMCU.idcode().read().rev_id() < REVISION_3 && !pa12_is_output_pull_low() } {
+    if second_bank_read && pac::DBGMCU.idcode().read().rev_id() < REVISION_3 && !pa12_is_output_pull_low() {
         panic!("Read corruption for stm32f42xxG and stm32f43xxG in dual bank mode when PA12 is in use for chips below revision 3, see errata 2.2.11");
     }
 }

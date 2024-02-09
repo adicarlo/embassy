@@ -1,13 +1,12 @@
+//! USB On The Go (OTG)
+
 use crate::rcc::RccPeripheral;
 use crate::{interrupt, peripherals};
 
-#[cfg(feature = "nightly")]
 mod usb;
-#[cfg(feature = "nightly")]
 pub use usb::*;
 
 // Using Instance::ENDPOINT_COUNT requires feature(const_generic_expr) so just define maximum eps
-#[cfg(feature = "nightly")]
 const MAX_EP_COUNT: usize = 9;
 
 pub(crate) mod sealed {
@@ -17,12 +16,13 @@ pub(crate) mod sealed {
         const ENDPOINT_COUNT: usize;
 
         fn regs() -> crate::pac::otg::Otg;
-        #[cfg(feature = "nightly")]
         fn state() -> &'static super::State<{ super::MAX_EP_COUNT }>;
     }
 }
 
+/// USB OTG instance.
 pub trait Instance: sealed::Instance + RccPeripheral {
+    /// Interrupt for this USB OTG instance.
     type Interrupt: interrupt::typelevel::Interrupt;
 }
 
@@ -99,8 +99,7 @@ foreach_interrupt!(
                 crate::pac::USB_OTG_FS
             }
 
-            #[cfg(feature = "nightly")]
-            fn state() -> &'static State<MAX_EP_COUNT> {
+                        fn state() -> &'static State<MAX_EP_COUNT> {
                 static STATE: State<MAX_EP_COUNT> = State::new();
                 &STATE
             }
@@ -151,8 +150,7 @@ foreach_interrupt!(
                 unsafe { crate::pac::otg::Otg::from_ptr(crate::pac::USB_OTG_HS.as_ptr()) }
             }
 
-            #[cfg(feature = "nightly")]
-            fn state() -> &'static State<MAX_EP_COUNT> {
+                        fn state() -> &'static State<MAX_EP_COUNT> {
                 static STATE: State<MAX_EP_COUNT> = State::new();
                 &STATE
             }

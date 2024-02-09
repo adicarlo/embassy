@@ -4,13 +4,12 @@
 
 #![no_std]
 #![no_main]
-#![feature(type_alias_impl_trait)]
 
 use embassy_executor::Spawner;
 use embassy_rp::bind_interrupts;
 use embassy_rp::peripherals::USB;
 use embassy_rp::usb::{Driver, InterruptHandler};
-use embassy_time::{Duration, Timer};
+use embassy_time::Timer;
 use {defmt_rtt as _, panic_probe as _};
 
 bind_interrupts!(struct Irqs {
@@ -36,7 +35,7 @@ async fn main(spawner: Spawner) {
     let mut counter = 0;
     loop {
         counter += 1;
-        log::info!("Tick {}\n", counter);
-        Timer::after(Duration::from_secs(1)).await;
+        log::info!("Tick {}", counter);
+        Timer::after_secs(1).await;
     }
 }

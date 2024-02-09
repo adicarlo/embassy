@@ -1,6 +1,5 @@
 #![no_std]
 #![no_main]
-#![feature(type_alias_impl_trait)]
 
 use cortex_m_rt::entry;
 use defmt::*;
@@ -20,7 +19,7 @@ async fn main_task() {
     let p = embassy_stm32::init(Default::default());
 
     let config = Config::default();
-    let mut usart = Uart::new(p.UART7, p.PF6, p.PF7, Irqs, NoDma, NoDma, config);
+    let mut usart = Uart::new(p.UART7, p.PF6, p.PF7, Irqs, NoDma, NoDma, config).unwrap();
 
     unwrap!(usart.blocking_write(b"Hello Embassy World!\r\n"));
     info!("wrote Hello, starting echo");

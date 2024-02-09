@@ -22,11 +22,15 @@ pub(crate) mod dmamux_sealed {
     }
 }
 
+/// DMAMUX1 instance.
 pub struct DMAMUX1;
+/// DMAMUX2 instance.
 #[cfg(stm32h7)]
 pub struct DMAMUX2;
 
+/// DMAMUX channel trait.
 pub trait MuxChannel: dmamux_sealed::MuxChannel {
+    /// DMAMUX instance this channel is on.
     type Mux;
 }
 
@@ -47,6 +51,6 @@ foreach_dma_channel! {
 }
 
 /// safety: must be called only once
-pub(crate) unsafe fn init() {
+pub(crate) unsafe fn init(_cs: critical_section::CriticalSection) {
     crate::_generated::init_dmamux();
 }

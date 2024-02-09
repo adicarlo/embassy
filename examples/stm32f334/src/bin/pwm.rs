@@ -1,13 +1,13 @@
 #![no_std]
 #![no_main]
-#![feature(type_alias_impl_trait)]
 
 use defmt::*;
 use embassy_executor::Spawner;
 use embassy_stm32::hrtim::*;
+use embassy_stm32::rcc::HrtimClockSource;
 use embassy_stm32::time::{khz, mhz};
 use embassy_stm32::Config;
-use embassy_time::{Duration, Timer};
+use embassy_time::Timer;
 use {defmt_rtt as _, panic_probe as _};
 
 #[embassy_executor::main]
@@ -17,6 +17,7 @@ async fn main(_spawner: Spawner) {
     config.rcc.hclk = Some(mhz(64));
     config.rcc.pclk1 = Some(mhz(32));
     config.rcc.pclk2 = Some(mhz(64));
+    config.rcc.hrtim = HrtimClockSource::PllClk;
 
     let p = embassy_stm32::init(config);
     info!("Hello World!");
@@ -46,7 +47,7 @@ async fn main(_spawner: Spawner) {
     //        .setr(0)
     //        .modify(|w| w.set_sst(Activeeffect::SETACTIVE));
     //
-    //    Timer::after(Duration::from_millis(500)).await;
+    //    Timer::after_millis(500).await;
     //
     //    embassy_stm32::pac::HRTIM1
     //        .tim(0)
@@ -63,7 +64,7 @@ async fn main(_spawner: Spawner) {
 
     buck_converter.start();
 
-    Timer::after(Duration::from_millis(500)).await;
+    Timer::after_millis(500).await;
 
     info!("end program");
 

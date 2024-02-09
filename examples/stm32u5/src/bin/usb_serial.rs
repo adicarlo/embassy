@@ -1,6 +1,5 @@
 #![no_std]
 #![no_main]
-#![feature(type_alias_impl_trait)]
 
 use defmt::{panic, *};
 use defmt_rtt as _; // global logger
@@ -23,9 +22,15 @@ async fn main(_spawner: Spawner) {
     info!("Hello World!");
 
     let mut config = Config::default();
-    config.rcc.mux = ClockSrc::PLL1R(PllSrc::HSI16, PllM::Div2, PllN::Mul10, PllClkDiv::NotDivided);
-    //config.rcc.mux = ClockSrc::MSI(MSIRange::Range48mhz);
-    config.rcc.hsi48 = true;
+    config.rcc.mux = ClockSrc::PLL1_R(PllConfig {
+        source: PllSource::HSI,
+        m: Pllm::DIV2,
+        n: Plln::MUL10,
+        p: Plldiv::DIV1,
+        q: Plldiv::DIV1,
+        r: Plldiv::DIV1,
+    });
+    config.rcc.hsi48 = Some(Hsi48Config { sync_from_usb: true }); // needed for USB
 
     let p = embassy_stm32::init(config);
 
@@ -63,6 +68,7 @@ async fn main(_spawner: Spawner) {
         &mut device_descriptor,
         &mut config_descriptor,
         &mut bos_descriptor,
+        &mut [], // no msos descriptors
         &mut control_buf,
     );
 

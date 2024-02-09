@@ -1,50 +1,29 @@
-pub use super::bus::{AHBPrescaler, APBPrescaler};
 use crate::pac::flash::vals::Latency;
-use crate::pac::rcc::vals::{self, Hsidiv, Ppre, Sw};
+use crate::pac::rcc::vals::{self, Sw};
+pub use crate::pac::rcc::vals::{
+    Hpre as AHBPrescaler, Hsidiv as HSIPrescaler, Pllm, Plln, Pllp, Pllq, Pllr, Ppre as APBPrescaler,
+};
 use crate::pac::{FLASH, PWR, RCC};
-use crate::rcc::{set_freqs, Clocks};
 use crate::time::Hertz;
 
 /// HSI speed
 pub const HSI_FREQ: Hertz = Hertz(16_000_000);
 
-/// LSI speed
-pub const LSI_FREQ: Hertz = Hertz(32_000);
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub enum HseMode {
+    /// crystal/ceramic oscillator (HSEBYP=0)
+    Oscillator,
+    /// external analog clock (low swing) (HSEBYP=1)
+    Bypass,
+}
 
 /// System clock mux source
 #[derive(Clone, Copy)]
 pub enum ClockSrc {
-    HSE(Hertz),
-    HSI16(HSI16Prescaler),
+    HSE(Hertz, HseMode),
+    HSI(HSIPrescaler),
     PLL(PllConfig),
     LSI,
-}
-
-#[derive(Clone, Copy)]
-pub enum HSI16Prescaler {
-    NotDivided,
-    Div2,
-    Div4,
-    Div8,
-    Div16,
-    Div32,
-    Div64,
-    Div128,
-}
-
-impl Into<Hsidiv> for HSI16Prescaler {
-    fn into(self) -> Hsidiv {
-        match self {
-            HSI16Prescaler::NotDivided => Hsidiv::DIV1,
-            HSI16Prescaler::Div2 => Hsidiv::DIV2,
-            HSI16Prescaler::Div4 => Hsidiv::DIV4,
-            HSI16Prescaler::Div8 => Hsidiv::DIV8,
-            HSI16Prescaler::Div16 => Hsidiv::DIV16,
-            HSI16Prescaler::Div32 => Hsidiv::DIV32,
-            HSI16Prescaler::Div64 => Hsidiv::DIV64,
-            HSI16Prescaler::Div128 => Hsidiv::DIV128,
-        }
-    }
 }
 
 /// The PLL configuration.
@@ -56,30 +35,30 @@ impl Into<Hsidiv> for HSI16Prescaler {
 #[derive(Clone, Copy)]
 pub struct PllConfig {
     /// The source from which the PLL receives a clock signal
-    pub source: PllSrc,
+    pub source: PllSource,
     /// The initial divisor of that clock signal
     pub m: Pllm,
     /// The PLL VCO multiplier, which must be in the range `8..=86`.
-    pub n: u8,
+    pub n: Plln,
     /// The final divisor for `PLLRCLK` output which drives the system clock
     pub r: Pllr,
 
     /// The divisor for the `PLLQCLK` output, if desired
-    pub q: Option<Pllr>,
+    pub q: Option<Pllq>,
 
     /// The divisor for the `PLLPCLK` output, if desired
-    pub p: Option<Pllr>,
+    pub p: Option<Pllp>,
 }
 
 impl Default for PllConfig {
     #[inline]
     fn default() -> PllConfig {
-        // HSI16 / 1 * 8 / 2 = 64 MHz
+        // HSI / 1 * 8 / 2 = 64 MHz
         PllConfig {
-            source: PllSrc::HSI16,
-            m: Pllm::Div1,
-            n: 8,
-            r: Pllr::Div2,
+            source: PllSource::HSI,
+            m: Pllm::DIV1,
+            n: Plln::MUL8,
+            r: Pllr::DIV2,
             q: None,
             p: None,
         }
@@ -87,90 +66,25 @@ impl Default for PllConfig {
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
-pub enum PllSrc {
-    HSI16,
-    HSE(Hertz),
+pub enum PllSource {
+    HSI,
+    HSE(Hertz, HseMode),
 }
 
-#[derive(Clone, Copy)]
-pub enum Pllm {
-    Div1,
-    Div2,
-    Div3,
-    Div4,
-    Div5,
-    Div6,
-    Div7,
-    Div8,
-}
-
-impl From<Pllm> for u8 {
-    fn from(v: Pllm) -> Self {
-        match v {
-            Pllm::Div1 => 0b000,
-            Pllm::Div2 => 0b001,
-            Pllm::Div3 => 0b010,
-            Pllm::Div4 => 0b011,
-            Pllm::Div5 => 0b100,
-            Pllm::Div6 => 0b101,
-            Pllm::Div7 => 0b110,
-            Pllm::Div8 => 0b111,
-        }
-    }
-}
-
-impl From<Pllm> for u32 {
-    fn from(v: Pllm) -> Self {
-        match v {
-            Pllm::Div1 => 1,
-            Pllm::Div2 => 2,
-            Pllm::Div3 => 3,
-            Pllm::Div4 => 4,
-            Pllm::Div5 => 5,
-            Pllm::Div6 => 6,
-            Pllm::Div7 => 7,
-            Pllm::Div8 => 8,
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-pub enum Pllr {
-    Div2,
-    Div3,
-    Div4,
-    Div5,
-    Div6,
-    Div7,
-    Div8,
-}
-
-impl From<Pllr> for u8 {
-    fn from(v: Pllr) -> Self {
-        match v {
-            Pllr::Div2 => 0b000,
-            Pllr::Div3 => 0b001,
-            Pllr::Div4 => 0b010,
-            Pllr::Div5 => 0b011,
-            Pllr::Div6 => 0b101,
-            Pllr::Div7 => 0b110,
-            Pllr::Div8 => 0b111,
-        }
-    }
-}
-
-impl From<Pllr> for u32 {
-    fn from(v: Pllr) -> Self {
-        match v {
-            Pllr::Div2 => 2,
-            Pllr::Div3 => 3,
-            Pllr::Div4 => 4,
-            Pllr::Div5 => 5,
-            Pllr::Div6 => 6,
-            Pllr::Div7 => 7,
-            Pllr::Div8 => 8,
-        }
-    }
+/// Sets the source for the 48MHz clock to the USB peripheral.
+#[cfg(any(stm32g0b1, stm32g0c1, stm32g0b0))]
+pub enum UsbSrc {
+    /// Use the High Speed Internal Oscillator. The CRS must be used to calibrate the
+    /// oscillator to comply with the USB specification for oscillator tolerance.
+    #[cfg(any(stm32g0b1, stm32g0c1))]
+    Hsi48(super::Hsi48Config),
+    /// Use the PLLQ output. The PLL must be configured to output a 48MHz clock. The
+    /// PLL needs to be using the HSE source to comply with the USB specification for oscillator
+    /// tolerance.
+    PllQ,
+    /// Use the HSE source directly.  The HSE must be a 48MHz source.  The HSE source must comply
+    /// with the USB specification for oscillator tolerance.
+    HSE,
 }
 
 /// Clocks configutation
@@ -179,44 +93,52 @@ pub struct Config {
     pub ahb_pre: AHBPrescaler,
     pub apb_pre: APBPrescaler,
     pub low_power_run: bool,
+    pub ls: super::LsConfig,
+    #[cfg(any(stm32g0b1, stm32g0c1, stm32g0b0))]
+    pub usb_src: Option<UsbSrc>,
 }
 
 impl Default for Config {
     #[inline]
     fn default() -> Config {
         Config {
-            mux: ClockSrc::HSI16(HSI16Prescaler::NotDivided),
-            ahb_pre: AHBPrescaler::NotDivided,
-            apb_pre: APBPrescaler::NotDivided,
+            mux: ClockSrc::HSI(HSIPrescaler::DIV1),
+            ahb_pre: AHBPrescaler::DIV1,
+            apb_pre: APBPrescaler::DIV1,
             low_power_run: false,
+            ls: Default::default(),
+            #[cfg(any(stm32g0b1, stm32g0c1, stm32g0b0))]
+            usb_src: None,
         }
     }
 }
 
 impl PllConfig {
-    pub(crate) fn init(self) -> u32 {
-        assert!(self.n >= 8 && self.n <= 86);
+    pub(crate) fn init(self) -> (Hertz, Option<Hertz>, Option<Hertz>) {
         let (src, input_freq) = match self.source {
-            PllSrc::HSI16 => (vals::Pllsrc::HSI16, HSI_FREQ.0),
-            PllSrc::HSE(freq) => (vals::Pllsrc::HSE, freq.0),
+            PllSource::HSI => (vals::Pllsrc::HSI, HSI_FREQ),
+            PllSource::HSE(freq, _) => (vals::Pllsrc::HSE, freq),
         };
 
-        let m_freq = input_freq / u32::from(self.m);
+        let m_freq = input_freq / self.m;
         // RM0454 § 5.4.4:
         // > Caution: The software must set these bits so that the PLL input frequency after the
         // > /M divider is between 2.66 and 16 MHz.
-        debug_assert!(m_freq >= 2_660_000 && m_freq <= 16_000_000);
+        debug_assert!(m_freq.0 >= 2_660_000 && m_freq.0 <= 16_000_000);
 
         let n_freq = m_freq * self.n as u32;
         // RM0454 § 5.4.4:
         // > Caution: The software must set these bits so that the VCO output frequency is between
         // > 64 and 344 MHz.
-        debug_assert!(n_freq >= 64_000_000 && n_freq <= 344_000_000);
+        debug_assert!(n_freq.0 >= 64_000_000 && n_freq.0 <= 344_000_000);
 
-        let r_freq = n_freq / u32::from(self.r);
+        let r_freq = n_freq / self.r;
         // RM0454 § 5.4.4:
         // > Caution: The software must set this bitfield so as not to exceed 64 MHz on this clock.
-        debug_assert!(r_freq <= 64_000_000);
+        debug_assert!(r_freq.0 <= 64_000_000);
+
+        let q_freq = self.q.map(|q| n_freq / q);
+        let p_freq = self.p.map(|p| n_freq / p);
 
         // RM0454 § 5.2.3:
         // > To modify the PLL configuration, proceed as follows:
@@ -229,35 +151,29 @@ impl PllConfig {
         // > 3. Change the desired parameter.
         // Enable whichever clock source we're using, and wait for it to become ready
         match self.source {
-            PllSrc::HSI16 => {
+            PllSource::HSI => {
                 RCC.cr().write(|w| w.set_hsion(true));
                 while !RCC.cr().read().hsirdy() {}
             }
-            PllSrc::HSE(_) => {
-                RCC.cr().write(|w| w.set_hseon(true));
+            PllSource::HSE(_, mode) => {
+                RCC.cr().write(|w| {
+                    w.set_hsebyp(mode != HseMode::Oscillator);
+                    w.set_hseon(true);
+                });
                 while !RCC.cr().read().hserdy() {}
             }
         }
 
-        // Configure PLLSYSCFGR
-        RCC.pllsyscfgr().modify(|w| {
-            w.set_pllr(u8::from(self.r));
+        // Configure PLLCFGR
+        RCC.pllcfgr().modify(|w| {
+            w.set_pllr(self.r);
             w.set_pllren(false);
-
-            if let Some(q) = self.q {
-                w.set_pllq(u8::from(q));
-            }
+            w.set_pllq(self.q.unwrap_or(Pllq::DIV2));
             w.set_pllqen(false);
-
-            if let Some(p) = self.p {
-                w.set_pllp(u8::from(p));
-            }
+            w.set_pllp(self.p.unwrap_or(Pllp::DIV2));
             w.set_pllpen(false);
-
             w.set_plln(self.n);
-
-            w.set_pllm(self.m as u8);
-
+            w.set_pllm(self.m);
             w.set_pllsrc(src)
         });
 
@@ -269,7 +185,7 @@ impl PllConfig {
 
         // > 5. Enable the desired PLL outputs by configuring PLLPEN, PLLQEN, and PLLREN in PLL
         // > configuration register (RCC_PLLCFGR).
-        RCC.pllsyscfgr().modify(|w| {
+        RCC.pllcfgr().modify(|w| {
             // We'll use R for system clock, so enable that unconditionally
             w.set_pllren(true);
 
@@ -278,47 +194,56 @@ impl PllConfig {
             w.set_pllpen(self.p.is_some());
         });
 
-        r_freq
+        (r_freq, q_freq, p_freq)
     }
 }
 
 pub(crate) unsafe fn init(config: Config) {
+    let mut pll1_q_freq = None;
+    let mut pll1_p_freq = None;
+
     let (sys_clk, sw) = match config.mux {
-        ClockSrc::HSI16(div) => {
-            // Enable HSI16
-            let div: Hsidiv = div.into();
+        ClockSrc::HSI(div) => {
+            // Enable HSI
             RCC.cr().write(|w| {
                 w.set_hsidiv(div);
                 w.set_hsion(true)
             });
             while !RCC.cr().read().hsirdy() {}
 
-            (HSI_FREQ.0 >> div.to_bits(), Sw::HSI)
+            (HSI_FREQ / div, Sw::HSI)
         }
-        ClockSrc::HSE(freq) => {
+        ClockSrc::HSE(freq, mode) => {
             // Enable HSE
-            RCC.cr().write(|w| w.set_hseon(true));
+            RCC.cr().write(|w| {
+                w.set_hseon(true);
+                w.set_hsebyp(mode != HseMode::Oscillator);
+            });
             while !RCC.cr().read().hserdy() {}
 
-            (freq.0, Sw::HSE)
+            (freq, Sw::HSE)
         }
         ClockSrc::PLL(pll) => {
-            let freq = pll.init();
-            (freq, Sw::PLLRCLK)
+            let (r_freq, q_freq, p_freq) = pll.init();
+
+            pll1_q_freq = q_freq;
+            pll1_p_freq = p_freq;
+
+            (r_freq, Sw::PLL1_R)
         }
         ClockSrc::LSI => {
             // Enable LSI
             RCC.csr().write(|w| w.set_lsion(true));
             while !RCC.csr().read().lsirdy() {}
-            (LSI_FREQ.0, Sw::LSI)
+            (super::LSI_FREQ, Sw::LSI)
         }
     };
 
     // Determine the flash latency implied by the target clock speed
     // RM0454 § 3.3.4:
-    let target_flash_latency = if sys_clk <= 24_000_000 {
+    let target_flash_latency = if sys_clk.0 <= 24_000_000 {
         Latency::WS0
-    } else if sys_clk <= 48_000_000 {
+    } else if sys_clk.0 <= 48_000_000 {
         Latency::WS1
     } else {
         Latency::WS2
@@ -353,7 +278,7 @@ pub(crate) unsafe fn init(config: Config) {
     }
 
     // Configure SYSCLK source, HCLK divisor, and PCLK divisor all at once
-    let (sw, hpre, ppre) = (sw.into(), config.ahb_pre.into(), config.apb_pre.into());
+    let (sw, hpre, ppre) = (sw.into(), config.ahb_pre, config.apb_pre);
     RCC.cfgr().modify(|w| {
         w.set_sw(sw);
         w.set_hpre(hpre);
@@ -374,27 +299,71 @@ pub(crate) unsafe fn init(config: Config) {
         FLASH.acr().modify(|w| w.set_latency(target_flash_latency));
     }
 
-    let ahb_freq = Hertz(sys_clk) / config.ahb_pre;
+    let ahb_freq = sys_clk / config.ahb_pre;
 
     let (apb_freq, apb_tim_freq) = match config.apb_pre {
-        APBPrescaler::NotDivided => (ahb_freq.0, ahb_freq.0),
+        APBPrescaler::DIV1 => (ahb_freq, ahb_freq),
         pre => {
-            let pre: Ppre = pre.into();
-            let pre: u8 = 1 << (pre.to_bits() - 3);
-            let freq = ahb_freq.0 / pre as u32;
-            (freq, freq * 2)
+            let freq = ahb_freq / pre;
+            (freq, freq * 2u32)
         }
     };
 
     if config.low_power_run {
-        assert!(sys_clk <= 2_000_000);
+        assert!(sys_clk.0 <= 2_000_000);
         PWR.cr1().modify(|w| w.set_lpr(true));
     }
 
-    set_freqs(Clocks {
-        sys: Hertz(sys_clk),
-        ahb1: ahb_freq,
-        apb1: Hertz(apb_freq),
-        apb1_tim: Hertz(apb_tim_freq),
+    let rtc = config.ls.init();
+    let lse_freq = config.ls.lse.map(|lse| lse.frequency);
+
+    let hsi_freq = (sw == Sw::HSI).then_some(HSI_FREQ);
+    let hsi_div_8_freq = hsi_freq.map(|f| f / 8u32);
+    let lsi_freq = (sw == Sw::LSI).then_some(super::LSI_FREQ);
+    let hse_freq = (sw == Sw::HSE).then_some(sys_clk);
+
+    #[cfg(any(stm32g0b1, stm32g0c1, stm32g0b0))]
+    let hsi48_freq = config.usb_src.and_then(|config| {
+        match config {
+            UsbSrc::PllQ => {
+                // Make sure the PLLQ is enabled and running at 48Mhz
+                assert!(pll1_q_freq.is_some() && pll1_q_freq.unwrap().0 == 48_000_000);
+                RCC.ccipr2()
+                    .modify(|w| w.set_usbsel(crate::pac::rcc::vals::Usbsel::PLL1_Q));
+                None
+            }
+            UsbSrc::HSE => {
+                // Make sure the HSE is enabled and running at 48Mhz
+                assert!(hse_freq.is_some() && hse_freq.unwrap().0 == 48_000_000);
+                RCC.ccipr2()
+                    .modify(|w| w.set_usbsel(crate::pac::rcc::vals::Usbsel::HSE));
+                None
+            }
+            #[cfg(any(stm32g0b1, stm32g0c1))]
+            UsbSrc::Hsi48(config) => {
+                let freq = super::init_hsi48(config);
+                RCC.ccipr2()
+                    .modify(|w| w.set_usbsel(crate::pac::rcc::vals::Usbsel::HSI48));
+                Some(freq)
+            }
+        }
     });
+    #[cfg(not(any(stm32g0b1, stm32g0c1, stm32g0b0)))]
+    let hsi48_freq: Option<Hertz> = None;
+
+    set_clocks!(
+        sys: Some(sys_clk),
+        hclk1: Some(ahb_freq),
+        pclk1: Some(apb_freq),
+        pclk1_tim: Some(apb_tim_freq),
+        hsi: hsi_freq,
+        hsi48: hsi48_freq,
+        hsi_div_8: hsi_div_8_freq,
+        hse: hse_freq,
+        lse: lse_freq,
+        lsi: lsi_freq,
+        pll1_q: pll1_q_freq,
+        pll1_p: pll1_p_freq,
+        rtc: rtc,
+    );
 }

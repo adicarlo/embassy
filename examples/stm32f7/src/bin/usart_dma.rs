@@ -1,6 +1,5 @@
 #![no_std]
 #![no_main]
-#![feature(type_alias_impl_trait)]
 
 use core::fmt::Write;
 
@@ -20,7 +19,7 @@ bind_interrupts!(struct Irqs {
 async fn main(_spawner: Spawner) {
     let p = embassy_stm32::init(Default::default());
     let config = Config::default();
-    let mut usart = Uart::new(p.UART7, p.PA8, p.PA15, Irqs, p.DMA1_CH1, NoDma, config);
+    let mut usart = Uart::new(p.UART7, p.PA8, p.PA15, Irqs, p.DMA1_CH1, NoDma, config).unwrap();
 
     for n in 0u32.. {
         let mut s: String<128> = String::new();
